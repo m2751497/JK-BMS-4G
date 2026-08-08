@@ -1,0 +1,8 @@
+# 保护 data 目录与内部脚本（Apache 环境生效；php -S 内置服务器下仅 data 保护）
+# ⚠ Nginx(宝塔默认)不读取 .htaccess：请改用「防直接访问守卫」(入口文件定义 JK_INCLUDED,
+#   内部文件检查该常量, 直接访问一律 403) —— 该守卫已内置在所有内部 php 文件顶部
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^data/ - [F,L]
+  RewriteRule ^(config|db|parser|range|ingest|auth)\.php$ - [F,L]
+</IfModule>

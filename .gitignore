@@ -1,0 +1,25 @@
+# ===== 运行时数据（上传部署前请清空，勿提交；data/index.php 守卫除外）=====
+01-网页服务端/data/*
+!01-网页服务端/data/index.php
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# ===== 第三方参考资料（非本项目成果，含原作者密钥，不发布）=====
+03-参考资料/
+
+# ===== 固件编译产物（用 Arduino IDE 重新编译生成）=====
+02-ESP32固件/build/
+
+# ===== 原始截图（docs/screenshots/ 已含发布用副本）=====
+图片/
+
+# ===== 工具 / 编辑器 =====
+.reasonix/
+reasonix.toml
+Thumbs.db
+.DS_Store
+*.swp
+.idea/
+.vscode/
