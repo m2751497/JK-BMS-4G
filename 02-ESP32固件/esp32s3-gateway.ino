@@ -1033,7 +1033,7 @@ const char INDEX_HTML[] PROGMEM =
 "</div>\n"
 "<div class='section'>\n"
 "<div class='wifi-status'>\n"
-"<span class='wifi-status-label'>WiFi AP (常开)</span>\n"
+"<span class='wifi-status-label'>WiFi AP (10分钟无操作自动关闭)</span>\n"
 "<span class='wifi-status-value' id='wifiStatus'>--</span>\n"
 "</div>\n"
 "<div class='config-input-row' style='gap:12px'>\n"
@@ -2581,9 +2581,16 @@ void loop() {
     httpServer.handleClient();
     webSocketServer.loop();
 
-    // v9.33: WiFi 自动关闭已禁用 —— 中继场景 WiFi 必须常开 (App/显示屏/后台随时可能访问),
-    //   10 分钟无操作就关 WiFi 导致"web 打不开" (用户隔一段时间再看就关掉了, 多次误判为设备卡死)
-    // if (millis() - g_lastWebRequest > WIFI_AUTO_OFF_MS) { ... }
+    // v2.16: WiFi 10 分钟无操作自动关闭 (省电) —— 用户确认恢复; BLE 中继不受影响,
+    //   长按 BOOT 键 5 秒或重启设备恢复 WiFi
+    if (millis() - g_lastWebRequest > WIFI_AUTO_OFF_MS) {
+      Serial.println("[WiFi] 10分钟无操作, 自动关闭 WiFi (省电)...");
+      webSocketServer.close();
+      httpServer.stop();
+      WiFi.softAPdisconnect(true);
+      g_wifiEnabled = false;
+      Serial.println("[WiFi] 已关闭, BLE 继续运行 (长按BOOT 5秒重启恢复)");
+    }
   }
 
   // 1.5 ★ 4G/GPS 串口处理: 接收 DTU 下行指令 + 双模式定时上报 (millis 节流, 不阻塞 BLE/WebSocket)
