@@ -200,7 +200,10 @@ struct GatewayConfig {
   char bmsMac[20] = "00:00:00:00:00:00";
   char apSsid[32] = "JK-BMS";
   char apPassword[64] = "12345678";
+  char blePin[8] = "1234";
   int cellInfoOffset = 32;  // v2.16/v9.44: 0x02 电芯帧字段偏移 (可配置, 默认 32, 24S BMS 实测值)
+  int protocolMode = 1;     // v9.47: 协议模式 0=JK02_24S(偏移0) 1=JK02_32S(偏移32,默认) 2=JK04(不预设)
+  bool wifiAutoOff = false; // v9.52: WiFi 10 分钟无操作自动关闭开关 (默认关=常开)
 };
 
 GatewayConfig g_config;
@@ -639,6 +642,9 @@ void handleGetConfig() {
   doc["httpPort"] = HTTP_PORT;
   doc["wsPort"] = WS_PORT;
   doc["cellInfoOffset"] = g_config.cellInfoOffset;  // v9.44
+  doc["protocolMode"] = g_config.protocolMode;      // v9.47
+  doc["wifiAutoOff"] = g_config.wifiAutoOff;        // v9.52
+  doc["blePin"] = g_config.blePin;                  // v9.55
 
   String output;
   serializeJson(doc, output);
@@ -709,6 +715,36 @@ void handlePostConfig() {
     }
   }
 
+  // v9.47: 协议模式选择 (0=JK02_24S, 1=JK02_32S, 2=JK04)。
+  //   选模式自动预设偏移: 24S→0, 32S→32; JK04 不预设 (仅转发)。
+  if (doc.containsKey("protocolMode")) {
+    int m = doc["protocolMode"].as<int>();
+    if (m >= 0 && m <= 2) {
+      g_config.protocolMode = m;
+      if (m == 0) g_config.cellInfoOffset = 0;       // JK02_24S
+      else if (m == 1) g_config.cellInfoOffset = 32; // JK02_32S
+      configDirty = true;
+      Serial.printf("[Config] 协议模式已更新: %d, 偏移=%d\n", m, g_config.cellInfoOffset);
+    }
+  }
+
+  // v9.52: WiFi 10 分钟无操作自动关闭开关
+  if (doc.containsKey("wifiAutoOff")) {
+    g_config.wifiAutoOff = doc["wifiAutoOff"].as<bool>();
+    configDirty = true;
+    Serial.printf("[Config] WiFi 自动关闭: %s\n", g_config.wifiAutoOff ? "开启(10分钟)" : "关闭(常开)");
+    if (g_config.wifiAutoOff) g_lastWebRequest = millis();
+  }
+
+  if (doc.containsKey("blePin")) {
+    String pin = doc["blePin"].as<String>();
+    if (pin.length() >= 1 && pin.length() <= 7) {
+      strncpy(g_config.blePin, pin.c_str(), 7);
+      g_config.blePin[7] = '\0';
+      configDirty = true;
+    }
+  }
+
   // 保存到 NVS
   if (configDirty) {
     prefs.begin("gateway", false);
@@ -716,7 +752,10 @@ void handlePostConfig() {
     prefs.putString("bmsMac", g_config.bmsMac);
     prefs.putString("apSsid", g_config.apSsid);
     prefs.putString("apPassword", g_config.apPassword);
+    prefs.putString("blePin", g_config.blePin);
     prefs.putInt("cellInfoOffset", g_config.cellInfoOffset);
+    prefs.putInt("protocolMode", g_config.protocolMode);
+    prefs.putBool("wifiAutoOff", g_config.wifiAutoOff);
     prefs.end();
     configDirty = false;
   }
@@ -1023,18 +1062,29 @@ const char INDEX_HTML[] PROGMEM =
 "<div style='flex:1'>\n"
 "<div class='config-label'>中继名称</div>\n"
 "<input type='text' class='config-input' id='relayName' maxlength='31' placeholder='JK-BMS-Relay'>\n"
+"<div class='config-label' style='margin-top:10px'>协议模式</div>\n"
+"<select id='protocolMode' class='config-input' style='margin-top:8px' onchange='onProtocolModeChange()'>\n"
+"<option value='0'>JK02_24S (24串, 偏移0)</option>\n"
+"<option value='1'>JK02_32S (偏移32, 默认)</option>\n"
+"<option value='2'>JK04 (不预设, 仅转发)</option>\n"
+"</select>\n"
 "<div class='config-label' style='margin-top:10px'>电芯帧偏移 (0x02 帧, 0~64 偶数)</div>\n"
 "<input type='number' class='config-input' id='cellInfoOffset' min='0' max='64' step='2' value='32'>\n"
 "<div style='margin-top:10px'>\n"
-"<button class='btn btn-save' onclick='saveRelayName()' style='width:100%'>保存中继名称</button>\n"
+"<button class='btn btn-save' onclick='saveRelayName()' style='width:100%'>保存中继名称与偏移</button>\n"
 "</div>\n"
 "</div>\n"
 "</div>\n"
 "</div>\n"
 "<div class='section'>\n"
 "<div class='wifi-status'>\n"
-"<span class='wifi-status-label'>WiFi AP (10分钟无操作自动关闭)</span>\n"
+"<span class='wifi-status-label'>WiFi AP</span>\n"
 "<span class='wifi-status-value' id='wifiStatus'>--</span>\n"
+"<label style='display:flex;align-items:center;gap:6px;margin-left:12px;cursor:pointer'>\n"
+"<input type='checkbox' id='wifiAutoOffCb' style='width:14px;height:14px;accent-color:#64ffda'>\n"
+"<span style='font-size:12px;color:#8892b0'>10 分钟无操作自动关闭 WiFi</span>\n"
+"</label>\n"
+"<button class='btn btn-save' onclick='saveWifiAutoOff()' style='flex:0 0 auto;padding:6px 12px;font-size:12px'>保存</button>\n"
 "</div>\n"
 "<div class='config-input-row' style='gap:12px'>\n"
 "<div>\n"
@@ -1092,12 +1142,14 @@ const char INDEX_HTML[] PROGMEM =
 "function connectWebSocket(){const p=location.protocol==='https:'?'wss:':'ws:';state.ws=new WebSocket(p+'//'+location.hostname+':81');state.ws.onopen=()=>{};state.ws.onmessage=e=>{const d=JSON.parse(e.data);if(typeof d.bmsConnected!=='undefined'){updateSysStatus(d)}else if(typeof d.diag!=='undefined'){addLog(d.diag)}else{updateBmsData(d)}};state.ws.onclose=()=>{setTimeout(connectWebSocket,5000)}}\n"
 "async function fetchData(){try{const d=await(await fetch('/api/data')).json();updateBmsData(d)}catch(e){}}\n"
 "async function fetchStatus(){try{const d=await(await fetch('/api/status')).json();updateSysStatus(d)}catch(e){}}\n"
-"async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';$('cellInfoOffset').value=(d.cellInfoOffset!=null)?d.cellInfoOffset:32;updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
+"async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';$('cellInfoOffset').value=(d.cellInfoOffset!=null)?d.cellInfoOffset:32;$('protocolMode').value=(d.protocolMode!=null)?d.protocolMode:1;$('wifiAutoOffCb').checked=!!d.wifiAutoOff;updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
 "async function scanBms(){const box=$('scanResult');box.innerHTML='扫描中(约3秒)...';try{const r=await fetch('/api/scan',{method:'POST'});if(!r.ok)return;for(let i=0;i<20;i++){await new Promise(res=>setTimeout(res,300));const s=await(await fetch('/api/scan/status')).json();if(!s.scanning)break}const res=await(await fetch('/api/scan/result')).json();if(!res.devices||!res.devices.length){box.innerHTML='未发现蓝牙设备';return}box.innerHTML='';res.devices.forEach(dev=>{const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;padding:7px 8px;border-bottom:1px solid #0f1626;cursor:pointer';row.onclick=()=>useBms(dev.mac,dev.name);const nm=document.createElement('span');nm.textContent=dev.name||'(无名称)';nm.style.color=dev.name?'#e6f1ff':'#8892b0';const mc=document.createElement('span');mc.style.cssText='color:#64ffda;font-family:monospace';mc.textContent=dev.mac;const rs=document.createElement('span');rs.textContent=dev.rssi+'dBm';row.appendChild(nm);row.appendChild(mc);row.appendChild(rs);box.appendChild(row)})}catch(e){box.innerHTML='扫描失败'}}\n"
 "function useBms(mac,name){$('bmsMacInput').value=mac;openModal('连接 BMS','确定连接 '+mac+(name?' ('+name+')':'')+' 吗？',async()=>{try{addLog('通过扫描选择 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'})},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
 "async function connectBMS(){const mac=$('bmsMacInput').value.trim();if(!mac){showToast('请先输入 MAC 地址',true);return}openModal('连接 BMS','确定要连接 '+mac+' 吗？\\n(将自动保存MAC)',async()=>{try{addLog('正在连接 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'});addLog('BMS 连接请求已发送')},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
 "async function disconnectBMS(){openModal('断开 BMS','确定要断开当前 BMS 连接吗？',async()=>{try{await fetch('/api/reconnect',{method:'POST'});addLog('已断开 BMS 连接')}catch(e){}})}\n"
-"async function saveRelayName(){const n=$('relayName').value.trim();const off=parseInt($('cellInfoOffset').value)||32;openModal('保存配置','保存中继名与电芯帧偏移('+off+')后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n,cellInfoOffset:off})});const d=await r.json();if(d.success){showToast('配置已保存, 正在重启...');addLog('中继名: '+n+' 偏移: '+off+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
+"async function saveRelayName(){const n=$('relayName').value.trim();const off=parseInt($('cellInfoOffset').value)||32;const m=parseInt($('protocolMode').value)||1;openModal('保存配置','保存中继名/协议模式/电芯帧偏移('+off+')后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n,cellInfoOffset:off,protocolMode:m})});const d=await r.json();if(d.success){showToast('配置已保存, 正在重启...');addLog('中继名: '+n+' 偏移: '+off+' 模式: '+m+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
+"function onProtocolModeChange(){const m=parseInt($('protocolMode').value);if(m===0){$('cellInfoOffset').value=0}else if(m===1){$('cellInfoOffset').value=32}}\n"
+"async function saveWifiAutoOff(){const v=$('wifiAutoOffCb').checked;try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wifiAutoOff:v})});const d=await r.json();if(d.success){showToast('WiFi自动关闭: '+(v?'开启(10分钟)':'关闭(常开)'));addLog('WiFi自动关闭已保存: '+(v?'开启':'关闭'))}else{showToast('保存失败',true)}}catch(e){showToast('保存失败',true)}}\n"
 "function updateWifiUI(enabled){const s=$('wifiStatus');if(enabled){s.textContent='已开启';s.className='wifi-status-value wifi-on';$('wifiOffBtn').style.display='flex';$('wifiOnBtn').style.display='none'}else{s.textContent='已关闭';s.className='wifi-status-value wifi-off';$('wifiOffBtn').style.display='none';$('wifiOnBtn').style.display='flex'}}\n"
 "async function saveApConfig(){const s=$('apSsidInput').value.trim();const p=$('apPasswordInput').value.trim();if(!s){showToast('AP名称不能为空',true);return}if(p.length>0&&p.length<8){showToast('密码至少8位',true);return}openModal('保存AP配置','保存后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apSsid:s,apPassword:p})});const d=await r.json();if(d.success){showToast('AP配置已保存, 正在重启...');addLog('AP配置已保存: SSID='+s+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
 "async function turnOffWifi(){openModal('关闭WiFi','关闭后仅BLE运行,节省资源,确定？',async()=>{try{await fetch('/api/wifi/off',{method:'POST'});addLog('WiFi已关闭 (BLE继续运行)');updateWifiUI(false);showToast('WiFi已关闭')}catch(e){showToast('操作失败',true)}})}\n"
@@ -2411,6 +2463,9 @@ void loadConfig() {
   }
   g_config.cellInfoOffset = prefs.getInt("cellInfoOffset", 32);  // v9.44: 电芯帧偏移
   if (g_config.cellInfoOffset < 0 || g_config.cellInfoOffset > 64) g_config.cellInfoOffset = 32;
+  g_config.protocolMode = prefs.getInt("protocolMode", 1);  // v9.47
+  if (g_config.protocolMode < 0 || g_config.protocolMode > 2) g_config.protocolMode = 1;
+  g_config.wifiAutoOff = prefs.getBool("wifiAutoOff", false);  // v9.52
   prefs.end();
   Serial.printf("[Config] 中继名称: %s\n", g_config.relayName);
   Serial.printf("[Config] BMS MAC: %s\n", g_config.bmsMac);
@@ -2581,9 +2636,8 @@ void loop() {
     httpServer.handleClient();
     webSocketServer.loop();
 
-    // v2.16: WiFi 10 分钟无操作自动关闭 (省电) —— 用户确认恢复; BLE 中继不受影响,
-    //   长按 BOOT 键 5 秒或重启设备恢复 WiFi
-    if (millis() - g_lastWebRequest > WIFI_AUTO_OFF_MS) {
+    // v2.16/v9.52: WiFi 自动关闭开关 (可配置, 默认关=常开; 开启后 10 分钟无 Web 请求自动关)
+    if (g_config.wifiAutoOff && millis() - g_lastWebRequest > WIFI_AUTO_OFF_MS) {
       Serial.println("[WiFi] 10分钟无操作, 自动关闭 WiFi (省电)...");
       webSocketServer.close();
       httpServer.stop();

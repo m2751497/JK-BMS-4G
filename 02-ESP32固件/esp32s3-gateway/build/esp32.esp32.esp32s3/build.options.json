@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "",
+  "fqbn": "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=4M,CDCOnBoot=cdc",
+  "hardwareFolders": "C:\\Users\\Admin\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.10,C:\\Users\\Admin\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.10",
+  "otherLibrariesFolders": "C:\\Users\\Admin\\Documents\\Arduino\\libraries",
+  "sketchLocation": "C:\\Users\\Admin\\Desktop\\JK-4G\\02-ESP32固件\\esp32s3-gateway"
+}
