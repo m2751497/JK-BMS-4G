@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.12）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.14）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -455,6 +455,10 @@ String buildStatusJson() {
   doc["valid"] = g_bmsData.valid;
   doc["lastUpdate"] = g_bmsData.lastUpdate;
   doc["uptime"] = millis();
+  // ★v2.14: 上次重启原因 (诊断)
+  prefs.begin("gateway", true);
+  doc["lastResetInfo"] = prefs.getString("lastResetInfo", "上次重启: --");
+  prefs.end();
   // BLE 服务端 (ESP32 作为中继广播, 极空 App 连接到这里)
   uint32_t svcConn = pBleServer ? pBleServer->getConnectedCount() : 0;
   doc["bleServerConnected"] = (svcConn > 0);
@@ -887,6 +891,7 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='sys-status-item'><span class='label'>保护板(BMS)</span><span class='value-group'><span class='value' id='sBmsMac'>--</span><span class='value err' id='sBms'>未连接</span></span></div>\n"
 "<div class='sys-status-item'><span class='label'>中继状态</span><span class='value' id='sBleSrv'>--</span></div>\n"
 "<div class='sys-status-item'><span class='label'>剩余可用内存</span><span class='value' id='sHeapFree'>--</span></div>\n"
+"<div class='sys-status-item'><span class='label'>上次重启</span><span class='value' id='sResetInfo'>--</span></div>\n"
 "</div>\n"
 "<div class='section' id='bmsDataCard'>\n"
 "<div class='section-title'><h2>BMS 实时数据</h2></div>\n"
@@ -983,7 +988,7 @@ const char INDEX_HTML[] PROGMEM =
 "function closeModal(){$('modal').classList.remove('show')}\n"
 "var cellsExpanded=false;function toggleCells(){cellsExpanded=!cellsExpanded;var w=$('cellVoltageWrap');var i=$('cellToggleIcon');if(cellsExpanded){w.style.maxHeight='2000px';i.style.transform='';i.innerHTML='&#9660;'}else{w.style.maxHeight='0px';i.style.transform='rotate(-90deg)';i.innerHTML='&#9654;'}}\n"
 "function setStatusEl(id,text,cls){const el=$(id);if(!el)return;el.textContent=text;el.className='value '+(cls||'')}\n"
-"function updateSysStatus(d){if(d.bmsConnected){setStatusEl('sBms','已连接('+(d.bmsRssi||0)+'dB)','ok')}else{setStatusEl('sBms','未连接','err')}setStatusEl('sBmsMac',d.bmsMac||'--','');const conn=(d.bleServerConnCount||0)>0;setStatusEl('sBleSrv',conn?('广播中('+d.bleServerConnCount+'个客户端已连接)'):'待机中',conn?'ok':'warn');const hf=d.heapFree||0;setStatusEl('sHeapFree',(hf/1024).toFixed(0)+' KB',(hf<30000)?'err':(hf<60000)?'warn':'ok')}\n"
+"function updateSysStatus(d){if(d.bmsConnected){setStatusEl('sBms','已连接('+(d.bmsRssi||0)+'dB)','ok')}else{setStatusEl('sBms','未连接','err')}setStatusEl('sBmsMac',d.bmsMac||'--','');const conn=(d.bleServerConnCount||0)>0;setStatusEl('sBleSrv',conn?('广播中('+d.bleServerConnCount+'个客户端已连接)'):'待机中',conn?'ok':'warn');const hf=d.heapFree||0;setStatusEl('sHeapFree',(hf/1024).toFixed(0)+' KB',(hf<30000)?'err':(hf<60000)?'warn':'ok');setStatusEl('sResetInfo',d.lastResetInfo||'上次重启: --','')}\n"
 "function updateBmsData(d){if(d.valid){state.connected=true;$('totalVoltage').innerHTML=d.totalVoltage.toFixed(2)+'<span class=\\'unit\\'>V</span>';$('current').innerHTML=(d.current>=0?'+':'')+d.current.toFixed(2)+'<span class=\\'unit\\'>A</span>';$('soc').innerHTML=d.soc+'<span class=\\'unit\\'>%</span>';$('cellDelta').innerHTML=d.deltaCellVoltage.toFixed(3)+'<span class=\\'unit\\'>V</span>';const maxT=Math.max(d.mosfetTemp||0,d.temp1||0,d.temp2||0);$('maxTemp').innerHTML=maxT.toFixed(1)+'<span class=\\'unit\\'>°C</span>';$('cellCount').textContent=d.cellCount||'--';const cells=d.cellVoltages||[];let html='';for(let i=0;i<cells.length;i++){html+='<div style=\\'background:#0a0e17;border-radius:4px;padding:4px;text-align:center\\'><div style=\\'font-size:9px;color:#8892b0\\'>#'+(i+1)+'</div><div style=\\'font-size:12px;font-weight:600;color:'+(cells[i]<3.0?'#ff4757':'#fff')+'\\'>'+cells[i].toFixed(3)+'</div></div>'}$('cellVoltageList').innerHTML=html}else{state.connected=false;$('totalVoltage').innerHTML='--<span class=\\'unit\\'>V</span>';$('current').innerHTML='--<span class=\\'unit\\'>A</span>';$('soc').innerHTML='--<span class=\\'unit\\'>%</span>';$('cellDelta').innerHTML='--<span class=\\'unit\\'>V</span>';$('maxTemp').innerHTML='--<span class=\\'unit\\'>°C</span>';$('cellCount').textContent='--';$('cellVoltageList').innerHTML=''}}\n"
 "function connectWebSocket(){const p=location.protocol==='https:'?'wss:':'ws:';state.ws=new WebSocket(p+'//'+location.hostname+':81');state.ws.onopen=()=>{};state.ws.onmessage=e=>{const d=JSON.parse(e.data);if(typeof d.bmsConnected!=='undefined'){updateSysStatus(d)}else if(typeof d.diag!=='undefined'){addLog(d.diag)}else{updateBmsData(d)}};state.ws.onclose=()=>{setTimeout(connectWebSocket,5000)}}\n"
 "async function fetchData(){try{const d=await(await fetch('/api/data')).json();updateBmsData(d)}catch(e){}}\n"
@@ -2097,6 +2102,34 @@ void loadConfig() {
   Serial.printf("[Config] AP SSID: %s\n", g_config.apSsid);
 }
 
+// ★v2.14: 记录上次重启原因 (区分 定时重启/看门狗卡死/上电/崩溃, Web 后台「系统状态」可查)
+void recordResetReason() {
+  prefs.begin("gateway", false);
+  String lastReason = prefs.getString("lastRebootReason", "");
+  prefs.remove("lastRebootReason");
+  esp_reset_reason_t r = esp_reset_reason();
+  const char* t = "未知";
+  switch (r) {
+    case ESP_RST_POWERON:   t = "上电启动"; break;
+    case ESP_RST_SW:        t = "软件重启"; break;
+    case ESP_RST_PANIC:     t = "异常崩溃"; break;
+    case ESP_RST_TASK_WDT:  t = "任务看门狗(卡死)"; break;
+    case ESP_RST_WDT:       t = "看门狗(卡死)"; break;
+    case ESP_RST_INT_WDT:   t = "中断看门狗(卡死)"; break;
+    case ESP_RST_BROWNOUT:  t = "电压跌落"; break;
+    default: break;
+  }
+  String info;
+  if (r == ESP_RST_SW && lastReason.length() > 0) {
+    info = "上次重启: " + lastReason;      // 自愈/定时/手动重启前存的真实原因
+  } else {
+    info = String("上次重启: ") + t;
+  }
+  prefs.putString("lastResetInfo", info);
+  prefs.end();
+  Serial.printf("[BMS] %s\n", info.c_str());
+}
+
 // ==================== 主程序 ====================
 
 void setup() {
@@ -2109,6 +2142,9 @@ void setup() {
   Serial.println("========================================");
   Serial.printf("目标 BMS: %s\n", g_config.bmsMac);
   Serial.println();
+
+  // ★v2.14: 记录上次重启原因 (在 prefs 读写前先于 loadConfig 调用无影响, 独立 namespace 段)
+  recordResetReason();
 
   // ★ 自愈: 任务看门狗 30s (ESP32 卡死自动重启)
   esp_task_wdt_config_t wdtCfg = {
@@ -2294,6 +2330,10 @@ void loop() {
 // ★ 自愈: 重启前可选冷重启 DTU (断电 3s 再上电), 然后 ESP32 重启
 void selfHealReboot(const char* reason) {
   Serial.printf("[自愈] 触发重启, 原因: %s\n", reason);
+  // ★v2.14: 重启前记录原因, 重启后 Web 后台可查
+  prefs.begin("gateway", false);
+  prefs.putString("lastRebootReason", String(reason));
+  prefs.end();
   if (DTU_POWER_PIN >= 0) {
     Serial.println("[自愈] 冷重启 DTU (断电 3s 再上电)...");
     digitalWrite(DTU_POWER_PIN, LOW);
