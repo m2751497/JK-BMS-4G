@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.15）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.16）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -345,8 +345,11 @@ void sendCommand(uint8_t cmd) {
 // ==================== 数据解析 ====================
 
 void parseCellInfo(const uint8_t* data, size_t len) {
-  // v2.9: 24S/32S 字段偏移不同 (与 parser.php 一致): 24S 从 0 偏移, 32S 从 32 偏移。
-  //   之前固定 off=32 导致 24 串电池读错位置 (电流/电压/温度全错位)。
+  // ★v2.16: 固定 off=32 —— 实测依据 (用户 JK-BD6A24S12PD, 24S, PowerShell 抓包 100+ 帧 CRC 验证):
+  //   cmd=0x02 电芯帧 24 节电压 2B/节从帧内第 32 字节开始, 总压 get32(150)=118+32、SOC/容量自洽
+  //   (总压 79.9V/SOC 78%/容量 70Ah)。早期 v2.9 曾用 cellsEnabled>24?32:0 动态判断,
+  //   对 24S 会错选 off2=0 → 电流/电压/温度全错位, 已回退。
+  const size_t off = 32;
 
   float minCellV = 100.0f;
   float maxCellV = -100.0f;
@@ -368,8 +371,7 @@ void parseCellInfo(const uint8_t* data, size_t len) {
     avgCellV /= cellsEnabled;
     g_bmsData.cellCount = cellsEnabled;
   }
-  // 根据激活串数选偏移: >24 串 → 32S 布局
-  size_t off2 = (cellsEnabled > 24) ? 32 : 0;
+  size_t off2 = off;  // 固定 32 (v2.16, 实测正确)
   if (maxCellV < 0) maxCellV = 0;
   if (minCellV > 100) minCellV = 0;
 
@@ -1059,7 +1061,7 @@ const char INDEX_HTML[] PROGMEM =
 "</div>\n"
 "</div>\n"
 "</div>\n"
-"<div style='position:fixed;right:10px;bottom:6px;font-size:10px;color:rgba(255,255,255,.35);z-index:99;pointer-events:none'>v2.15</div>\n"
+"<div style='position:fixed;right:10px;bottom:6px;font-size:10px;color:rgba(255,255,255,.35);z-index:99;pointer-events:none'v2.16</div>\n"
 "<script>\n"
 "const state={ws:null,connected:false,logs:[]};\n"
 "function $(id){return document.getElementById(id)}\n"
