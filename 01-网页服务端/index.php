@@ -442,7 +442,10 @@ function updateRange(r){
   if (!r) return;
   lastRangeKm = r.rangeKm;
   $('rangeKm').innerHTML = (r.rangeKm!==null&&r.rangeKm!==undefined) ? r.rangeKm+' <small>km</small>' : '-- <small>km</small>';
-  $('rangeFactorInput').value = r.rangeFactor || '';
+  // ★修复: 轮询回填前检查输入框是否正在被编辑(聚焦), 否则用户输入会被每3秒的刷新覆盖
+  if (document.activeElement !== $('rangeFactorInput')) {
+    $('rangeFactorInput').value = r.rangeFactor || '';
+  }
   $('learningState').textContent = r.learningEnabled !== undefined ? (r.learningEnabled?'开启':'关闭') : '--';
   // 学习运行状态 + 历史记录
   const ls = $('learningStatus');
