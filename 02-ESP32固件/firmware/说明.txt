@@ -1,13 +1,16 @@
-ESP32-S3 Super Mini (4MB Flash) 固件 v2.14 —— 可直接烧录
+ESP32-S3 Super Mini (4MB Flash) 固件 v2.15 —— 可直接烧录
 
 文件:
-- esp32s3-gateway-v2.14-4MB-OTA.merged.bin  ← 首次烧录用这个(4MB 分区表全量固件,含 bootloader+分区+应用)
-- esp32s3-gateway-v2.14-OTA.bin             ← 以后 OTA 升级用这个(Web 后台「固件升级」上传)
+- esp32s3-gateway-v2.15-4MB-OTA.merged.bin  ← 首次烧录用这个(4MB 分区表全量固件, 含 bootloader+分区+应用)
+- esp32s3-gateway-v2.15-OTA.bin             ← 以后 OTA 升级用这个(Web 后台「固件升级」上传)
+
+v2.15 说明: BLE 部分合入中继完整版 v9.43 全部修复(断连重建防崩溃/回调安全/AT心跳保活/
+MTU降级/隐身广播/命令缓存补发/手动扫描), 4G/GPS/双模式/自愈/重启记录/OTA 不变。
 
 烧录:
-1. 首次:Flash Download Tool 或 esptool 整片烧 merged.bin(擦除全片)
-   示例(esptool): esptool.py --chip esp32s3 --port COMx write_flash 0x0 esp32s3-gateway-v2.14-4MB-OTA.merged.bin
-2. 以后升级:连 ESP32 Web 后台(192.168.4.1) → 固件升级 → 选 esp32s3-gateway-v2.14-OTA.bin → 上传
+1. 首次: Flash Download Tool 或 esptool 整片烧 merged.bin(擦除全片)
+   示例(esptool): esptool.py --chip esp32s3 --port COMx write_flash 0x0 esp32s3-gateway-v2.15-4MB-OTA.merged.bin
+2. 以后升级: 连 ESP32 Web 后台(192.168.4.1) → 固件升级 → 选 esp32s3-gateway-v2.15-OTA.bin → 上传
    成功自动重启, 失败自动回滚旧固件
 
-分区:4MB 双 OTA(app0/app1 各 1.94MB, 无文件系统), 见 ../partitions.csv
+分区: 4MB 双 OTA(app0/app1 各 1.94MB, 无文件系统), 见 ../partitions.csv

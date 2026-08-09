@@ -46,7 +46,7 @@
 
 ## 固件
 
-`02-ESP32固件/esp32s3-gateway.ino`（v2.14，**适配 ESP32-S3 Super Mini 4MB Flash**），Arduino IDE 编译，所需库：
+`02-ESP32固件/esp32s3-gateway.ino`（v2.15，**适配 ESP32-S3 Super Mini 4MB Flash**），Arduino IDE 编译，所需库：
 - Arduino-ESP32 Core ≥ 3.0.0
 - NimBLE-Arduino ≥ 2.2.2（双 FFE1 必须用 NimBLE，勿用 Bluedroid）
 - WebSockets / ArduinoJson
@@ -63,6 +63,7 @@
 - **双模式控制**：下行指令 **MQTT 直连发布**（EMQX 客户端认证账号，TLS 8883），网页开/关自动切换上报频率
 - **OTA 固件升级**：Web 后台「固件升级」上传 `.ino.bin` 即可（升级期间保持供电）；首次烧录用 `merged.bin` 全量刷（含 4MB 分区表）
 - **OTA 网页升级（v2.14）**：Web 后台「固件升级」上传 `.bin` 直接烧写，成功自动重启、失败自动回滚（4MB Flash 双 OTA 分区，见 `02-ESP32固件/partitions.csv`）
+- **BLE 稳定性（v2.15，合入中继完整版 v9.43 全部修复）**：断连后销毁重建客户端防崩溃(FIX-22)、回调内不查 NimBLE API 防崩溃(FIX-23/24)、AT 心跳刷新存活时间防误断(FIX-26)、连接参数放宽抗挤占(FIX-27)、扫描失败退避/不重复启动、MTU 低重试降级、BMS 未连接时中继隐身防抢连、App 命令缓存补发、手动扫描（Web 后台选设备）、WiFi 常开不再自动关闭
 - **自愈机制**：卡死看门狗 30s 重启 / DTU 串口无响应 8 分钟重启 / MQTT 下行静默断 12 分钟重启；**重启原因记录**：Web 后台「系统状态」可查上次重启原因（定时重启/看门狗卡死/上电/崩溃），方便诊断
 
 > 编译产物见 `02-ESP32固件/build/`（`esp32s3-gateway.ino.merged.bin` 可直接烧录，该目录不入仓库）

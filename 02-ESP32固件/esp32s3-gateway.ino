@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.14）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.15）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -128,7 +128,8 @@ struct ConnSubState {
   bool active;
 };
 ConnSubState g_connStates[MAX_BLE_CLIENTS];
-int g_subscribedConnCount = 0;
+volatile int g_subscribedConnCount = 0;  // v9.34: volatile (onSubscribe 在 NimBLE 任务写, loop 读)
+volatile int g_bleClientCount = 0;  // v9.33: 自维护 BLE 服务端连接计数 (回调链安全, 替代 getConnectedCount)
 
 // 原始帧缓存 (订阅后推送完整帧给 App, 从帧头 55AAEB90 开始, 保证接收端拼装正确)
 uint8_t g_cellInfoFrame[300];
@@ -137,6 +138,28 @@ bool g_hasCellInfo = false;
 uint8_t g_deviceInfoFrame[300];
 size_t g_deviceInfoLen = 0;
 bool g_hasDeviceInfo = false;
+
+// v9.38: BMS 未连接期间缓存的 App 命令 (显示屏/极空 App 先连上中继就发 0x97/0x96,
+//   BMS 还没连上时原逻辑直接丢弃 → App 收不到响应; 缓存最近一条, BMS 连上后补发)
+uint8_t g_pendingCmd[20] = {0};
+int g_pendingCmdLen = 0;
+
+// v9.40/v9.43: MTU 低时重试计数 (防"MTU<100 无限断开重试导致永远连不上")
+#define MTU_MAX_RETRY 2
+int g_mtuRetryCount = 0;
+
+// v9.17: 手动扫描收集 (Web 后台"扫描保护板")
+struct BmsScanEntry {
+  char mac[20];
+  char name[33];
+  int rssi;
+};
+#define MAX_SCAN_ENTRIES 20
+BmsScanEntry g_scanList[MAX_SCAN_ENTRIES];
+volatile int g_scanCount = 0;
+volatile bool g_manualScanning = false;
+volatile bool g_scanStarting = false;  // v9.33: 扫描排队标志 (HTTP handler 只设标志)
+volatile int g_bmsScanFailCount = 0;   // v9.33: 自动扫描连续失败次数 (指数退避)
 
 // Web 服务器
 WebServer httpServer(HTTP_PORT);
@@ -259,6 +282,9 @@ void pushBMSData();
 void notifyCB(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify);
 void forwardFrameToClients(const uint8_t* frame, size_t len);
 void forwardFrameToClient(uint16_t connHandle, const uint8_t* frame, size_t len);
+void initWiFiAP();
+void initWebServer();
+void initWebSocket();
 
 // ★ 4G/GPS 串口模块 (合并自 esp32s3.ino + 新增双模式定时上报)
 void handle4G();
@@ -461,7 +487,7 @@ String buildStatusJson() {
   doc["lastResetInfo"] = prefs.getString("lastResetInfo", "上次重启: --");
   prefs.end();
   // BLE 服务端 (ESP32 作为中继广播, 极空 App 连接到这里)
-  uint32_t svcConn = pBleServer ? pBleServer->getConnectedCount() : 0;
+  uint32_t svcConn = g_bleClientCount;  // v9.33: 自维护计数 (HTTP 上下文安全, 统一方案)
   doc["bleServerConnected"] = (svcConn > 0);
   doc["bleServerConnCount"] = svcConn;
   doc["bleServerName"] = g_config.relayName;
@@ -962,6 +988,11 @@ const char INDEX_HTML[] PROGMEM =
 "</div>\n"
 "</div>\n"
 "<div class='section'>\n"
+"<div class='section-title'><h2>蓝牙扫描</h2></div>\n"
+"<button class='btn btn-save' onclick='scanBms()' style='width:100%'>扫描保护板</button>\n"
+"<div id='scanResult' style='font-size:12px;margin-top:8px'></div>\n"
+"</div>\n"
+"<div class='section'>\n"
 "<div class='section-title'><h2>BLE 中继</h2></div>\n"
 "<div class='config-input-row' style='gap:12px'>\n"
 "<div style='flex:1'>\n"
@@ -1044,6 +1075,8 @@ const char INDEX_HTML[] PROGMEM =
 "async function fetchData(){try{const d=await(await fetch('/api/data')).json();updateBmsData(d)}catch(e){}}\n"
 "async function fetchStatus(){try{const d=await(await fetch('/api/status')).json();updateSysStatus(d)}catch(e){}}\n"
 "async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
+"async function scanBms(){const box=$('scanResult');box.innerHTML='扫描中(约3秒)...';try{const r=await fetch('/api/scan',{method:'POST'});if(!r.ok)return;for(let i=0;i<20;i++){await new Promise(res=>setTimeout(res,300));const s=await(await fetch('/api/scan/status')).json();if(!s.scanning)break}const res=await(await fetch('/api/scan/result')).json();if(!res.devices||!res.devices.length){box.innerHTML='未发现蓝牙设备';return}box.innerHTML='';res.devices.forEach(dev=>{const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;padding:7px 8px;border-bottom:1px solid #0f1626;cursor:pointer';row.onclick=()=>useBms(dev.mac,dev.name);const nm=document.createElement('span');nm.textContent=dev.name||'(无名称)';nm.style.color=dev.name?'#e6f1ff':'#8892b0';const mc=document.createElement('span');mc.style.cssText='color:#64ffda;font-family:monospace';mc.textContent=dev.mac;const rs=document.createElement('span');rs.textContent=dev.rssi+'dBm';row.appendChild(nm);row.appendChild(mc);row.appendChild(rs);box.appendChild(row)})}catch(e){box.innerHTML='扫描失败'}}\n"
+"function useBms(mac,name){$('bmsMacInput').value=mac;openModal('连接 BMS','确定连接 '+mac+(name?' ('+name+')':'')+' 吗？',async()=>{try{addLog('通过扫描选择 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'})},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
 "async function connectBMS(){const mac=$('bmsMacInput').value.trim();if(!mac){showToast('请先输入 MAC 地址',true);return}openModal('连接 BMS','确定要连接 '+mac+' 吗？\\n(将自动保存MAC)',async()=>{try{addLog('正在连接 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'});addLog('BMS 连接请求已发送')},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
 "async function disconnectBMS(){openModal('断开 BMS','确定要断开当前 BMS 连接吗？',async()=>{try{await fetch('/api/reconnect',{method:'POST'});addLog('已断开 BMS 连接')}catch(e){}})}\n"
 "async function saveRelayName(){const n=$('relayName').value.trim();if(!n){showToast('名称不能为空',true);return}openModal('保存中继名','保存后将自动重启设备使BLE广播名称生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n})});const d=await r.json();if(d.success){showToast('中继名已保存, 正在重启...');addLog('中继名已保存: '+n+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
@@ -1060,6 +1093,10 @@ const char INDEX_HTML[] PROGMEM =
 
 // 主页 HTML
 void handleRoot() {
+  // v9.20: 禁用浏览器缓存 —— 固件升级后 HTML/JS 变化, 缓存旧页面会导致 JS 报错白屏"打不开"
+  httpServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  httpServer.sendHeader("Pragma", "no-cache");
+  httpServer.sendHeader("Expires", "0");
   httpServer.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
 }
 
@@ -1073,6 +1110,7 @@ int registerConn(uint16_t handle) {
       g_connStates[i].connHandle = handle;
       g_connStates[i].subscribed = false;
       g_connStates[i].active = true;
+      g_bleClientCount++;  // v9.33
       return i;
     }
   }
@@ -1088,6 +1126,7 @@ void unregisterConn(uint16_t handle) {
       }
       g_connStates[i].active = false;
       g_connStates[i].subscribed = false;
+      if (g_bleClientCount > 0) g_bleClientCount--;  // v9.33
       break;
     }
   }
@@ -1114,7 +1153,7 @@ void setSubscribed(uint16_t handle, bool sub) {
 //         所以必须按每个客户端 getPeerMTU()-3 分块; 既不能用 300 字节整包, 也不该统一 20 字节块。
 void forwardFrameToClients(const uint8_t* frame, size_t len) {
   if (!pBleServerChar || !pBleServer) return;
-  if (pBleServer->getConnectedCount() == 0 || g_subscribedConnCount == 0) return;
+  if (g_bleClientCount == 0 || g_subscribedConnCount == 0) return;  // v9.33: 自维护计数 (回调链安全)
 
   for (int i = 0; i < MAX_BLE_CLIENTS; i++) {
     if (!g_connStates[i].active || !g_connStates[i].subscribed) continue;
@@ -1136,7 +1175,7 @@ void forwardFrameToClients(const uint8_t* frame, size_t len) {
 //   与 forwardFrameToClients 同构, 但数据源是任意原始块 (不要求是完整帧)。
 void forwardRawToClients(const uint8_t* data, size_t len) {
   if (!pBleServerChar || !pBleServer) return;
-  if (pBleServer->getConnectedCount() == 0 || g_subscribedConnCount == 0) return;
+  if (g_bleClientCount == 0 || g_subscribedConnCount == 0) return;  // v9.33: 自维护计数 (回调链安全)
   for (int i = 0; i < MAX_BLE_CLIENTS; i++) {
     if (!g_connStates[i].active || !g_connStates[i].subscribed) continue;
     uint16_t mtu = pBleServer->getPeerMTU(g_connStates[i].connHandle);
@@ -1166,54 +1205,35 @@ void forwardFrameToClient(uint16_t connHandle, const uint8_t* frame, size_t len)
 
 // --- BLE 服务端回调 (处理极空 App 的连接/断开/配对) ---
 
+// v9.7/FIX-24: 自维护服务端连接计数 —— 回调内不使用 NimBLE 内部查询 API
+//   (getAddress().toString()/getConnectedCount()), 实测在连接回调内调用这些
+//   会触发内部对象失效崩溃 (Load access fault)
+int g_serverConnCount = 0;
+
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
-    std::string mac = connInfo.getAddress().toString();
     uint16_t handle = connInfo.getConnHandle();
     int slot = registerConn(handle);
-    int count = pServer->getConnectedCount();
+    g_serverConnCount++;
     if (slot < 0) {
-      // ★FIX-16 (完整版): NimBLE 控制器允许 6 连接 (含 BMS 客户端), App 槽位只有 MAX_BLE_CLIENTS 个;
+      // FIX-16 (完整版): NimBLE 控制器允许 6 连接 (含 BMS 客户端), App 槽位只有 MAX_BLE_CLIENTS 个;
       //   超出的客户端被接受却收不到数据会 6 秒超时断开, 不如显式拒绝
-      Serial.printf("[BLE-Server] 连接槽位已满 (%d), 拒绝客户端: %s (handle=%d)\n",
-        MAX_BLE_CLIENTS, mac.c_str(), handle);
+      Serial.printf("[BLE-Server] 连接槽位已满 (%d), 拒绝 handle=%d\n", MAX_BLE_CLIENTS, handle);
       pServer->disconnect(handle);
+      g_serverConnCount--;
       return;
     }
-    Serial.printf("[BLE-Server] 客户端连接: %s (handle=%d, 共%d个, 槽位=%d)\n",
-      mac.c_str(), handle, count, slot);
+    Serial.printf("[BLE-Server] 客户端连接: handle=%d, 槽位=%d, 共%d\n", handle, slot, g_serverConnCount);
 
-    // ★ 多客户端: 未达上限时重启广播, 让其他客户端也能发现并连接
-    if (count < MAX_BLE_CLIENTS) {
-      NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
-      if (pAdv && !pAdv->isAdvertising()) {
-        pAdv->start();
-        Serial.println("[BLE-Server] 广播已重启 (允许更多客户端连接)");
-      }
-    } else {
-      // 达到上限, 停止广播
-      NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
-      if (pAdv && pAdv->isAdvertising()) {
-        pAdv->stop();
-        Serial.println("[BLE-Server] 已达最大连接数, 停止广播");
-      }
-    }
+    // v9.6/FIX-23: 不在连接回调内操作广播; 广播启停统一交给 loop() 5 秒健康检查
   }
 
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
-    std::string mac = connInfo.getAddress().toString();
     uint16_t handle = connInfo.getConnHandle();
     unregisterConn(handle);
-    int count = pServer->getConnectedCount();
-    Serial.printf("[BLE-Server] 客户端断开: %s, reason=%d (剩余 %d 个, 已订阅=%d)\n",
-      mac.c_str(), reason, count, g_subscribedConnCount);
-
-    // ★ 重启广播, 让新客户端能连接
-    NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
-    if (pAdv && !pAdv->isAdvertising() && count < MAX_BLE_CLIENTS) {
-      pAdv->start();
-      Serial.println("[BLE-Server] 广播已重启");
-    }
+    if (g_serverConnCount > 0) g_serverConnCount--;
+    Serial.printf("[BLE-Server] 客户端断开: handle=%d, reason=%d (剩余 %d, 已订阅=%d)\n",
+      handle, reason, g_serverConnCount, g_subscribedConnCount);
   }
 };
 
@@ -1238,7 +1258,14 @@ class BleCharCallbacks : public NimBLECharacteristicCallbacks {
       lastRequest = millis();
       Serial.printf("[BLE-Server] 转发 %d bytes 给 BMS\n", (int)value.length());
     } else {
-      Serial.println("[BLE-Server] BMS 未连接, 无法转发");
+      // v9.38: BMS 未连接时不丢弃, 缓存最近一条命令, BMS 连上后自动补发。
+      //   场景 (用户实测): 显示屏/极空 App 先连上中继就发 0x97/0x96 指令, 此时 BMS 还在重连,
+      //   原逻辑直接丢弃 → App/显示屏收不到响应一直等待; 缓存后 BMS 一连接成功就补发, App 立即有响应。
+      if (value.length() > 0 && value.length() <= sizeof(g_pendingCmd)) {
+        memcpy(g_pendingCmd, value.data(), value.length());
+        g_pendingCmdLen = (int)value.length();
+      }
+      Serial.printf("[BLE-Server] BMS 未连接, 缓存命令 %d bytes (待补发)\n", (int)value.length());
     }
   }
 
@@ -1403,9 +1430,11 @@ void initBleServer() {
 
   pAdv->setScanResponseData(scanRsp);
 
-  pAdv->start();
+  // v9.41: 初始化不启动广播 —— BMS 未连接时对客户端隐身 (防抢连挤占 BMS 连接/MTU 协商);
+  //   广播由 loop 广播健康检查在 bmsConnected=true 后自动拉起。
+  // pAdv->start();
 
-  Serial.printf("[BLE-Server] 广播已启动, 名称: %s\n", g_config.relayName);
+  Serial.printf("[BLE-Server] 广播已配置, 名称: %s (BMS 连接后自动启动)\n", g_config.relayName);
   Serial.println("[BLE-Server] 服务: FFE0(FFE1/FFE2/FFE3) + FF10(FF11/FF12)");
   Serial.println("[BLE-Server] 等待极空 App 连接...");
 }
@@ -1415,14 +1444,25 @@ void initBleServer() {
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient*) {
     Serial.println("[BMS] 已连接");
+    g_bmsScanFailCount = 0;  // v9.33: 连接成功清零失败计数
   }
 
-  void onDisconnect(NimBLEClient*, int reason) {
+  void onDisconnect(NimBLEClient* pcli, int reason) {
     bmsConnected = false;
     pWriteChar = nullptr;
     pNotifyChar = nullptr;
     g_bmsData.rssi = 0;
     Serial.printf("[BMS] 断开连接, reason=%d\n", reason);
+    // v9.5/FIX-22: 断连后销毁 client 对象 —— NimBLE-Arduino 复用已断开的 NimBLEClient
+    //   直接 connect 会因内部状态失效崩溃 (C3 实测 Load access fault);
+    //   销毁后下次连接重新 createClient (官方推荐的重连模式)。
+    if (pcli != nullptr) {
+      NimBLEDevice::deleteClient(pcli);
+    }
+    pClient = nullptr;  // 强制下次连接重建
+    frameBuffer.clear();
+    g_advDevice = nullptr;
+    g_doConnect = false;
   }
 };
 
@@ -1432,6 +1472,45 @@ ClientCallbacks g_clientCB;
 class BmsScanCallbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* dev) {
     std::string devMac = dev->getAddress().toString();
+    // v9.33: 扫描失败退避计数 —— 扫到目标即清零 (说明链路可用)
+    if (devMac == std::string(g_config.bmsMac)) {
+      g_bmsScanFailCount = 0;
+    }
+    // v9.17: 手动扫描模式 (web 后台扫描保护板) —— 收集所有设备供前端选择
+    if (g_manualScanning) {
+      {
+        const char* nm = dev->getName().c_str();
+        // v9.36: 按 MAC 去重合并 —— 主动扫描同一设备会回调多次 (adv 包 + scan response),
+        //   已存在则合并 (名称优先非空, 覆盖 RSSI), 不存在才追加。
+        int found = -1;
+        for (int i = 0; i < g_scanCount; i++) {
+          if (strcmp(devMac.c_str(), g_scanList[i].mac) == 0) { found = i; break; }
+        }
+        if (found >= 0) {
+          if (!g_scanList[found].name[0] && nm && nm[0]) {
+            strncpy(g_scanList[found].name, nm, sizeof(g_scanList[found].name) - 1);
+            g_scanList[found].name[sizeof(g_scanList[found].name) - 1] = '\0';
+          }
+          g_scanList[found].rssi = dev->getRSSI();
+        } else if (g_scanCount < MAX_SCAN_ENTRIES) {
+          strncpy(g_scanList[g_scanCount].mac, devMac.c_str(), sizeof(g_scanList[g_scanCount].mac) - 1);
+          g_scanList[g_scanCount].mac[sizeof(g_scanList[g_scanCount].mac) - 1] = '\0';
+          strncpy(g_scanList[g_scanCount].name, (nm && nm[0]) ? nm : "", sizeof(g_scanList[g_scanCount].name) - 1);
+          g_scanList[g_scanCount].name[sizeof(g_scanList[g_scanCount].name) - 1] = '\0';
+          g_scanList[g_scanCount].rssi = dev->getRSSI();
+          g_scanCount++;
+        }
+      }
+      return;  // 手动模式不触发自动连接
+    }
+    // v9.16: 打印扫描到的设备 (限流 5s) —— 定位"BMS 扫不到"是设备不在还是扫描失效
+    static unsigned long lastScanDiag = 0;
+    if (millis() - lastScanDiag > 5000) {
+      lastScanDiag = millis();
+      const char* name = dev->getName().c_str();
+      Serial.printf("[SCAN] 看到设备: %s (%s) rssi=%d\n",
+        devMac.c_str(), (name && name[0]) ? name : "无名称", dev->getRSSI());
+    }
     if (devMac == std::string(g_config.bmsMac) && !bmsConnected && !g_doConnect) {
       Serial.printf("[BMS] 扫描到目标设备: %s\n", devMac.c_str());
       g_advDevice = dev;
@@ -1439,24 +1518,111 @@ class BmsScanCallbacks : public NimBLEScanCallbacks {
       NimBLEDevice::getScan()->stop();
     }
   }
+  // v9.33: 扫描结束回调 —— 签名必须 (const NimBLEScanResults&, int) 才会被 NimBLE 调用!
+  void onScanEnd(const NimBLEScanResults& results, int reason) {
+    if (g_manualScanning) {
+      g_manualScanning = false;  // 手动扫描结束标志 (JS 轮询 status 用)
+      g_scanStarting = false;
+      return;
+    }
+    if (!bmsConnected && !g_doConnect) {
+      g_bmsScanFailCount++;
+      if (g_bmsScanFailCount > 4) g_bmsScanFailCount = 4;  // 封顶: 退避上限 10s
+      unsigned long nextIvl = RECONNECT_INTERVAL * (1 << g_bmsScanFailCount);
+      if (nextIvl > 10000) nextIvl = 10000;
+      Serial.printf("[BMS] 扫描无结果 (连续失败 %d 次, 下次 %.0fs 后)\n",
+        g_bmsScanFailCount, nextIvl / 1000.0);
+    }
+  }
 };
 
 BmsScanCallbacks g_bmsScanCB;
 
+// v9.17: 手动扫描 API (web 后台"扫描保护板")
+// POST /api/scan      : 排队启动扫描, 立即返回
+// GET  /api/scan/status : 返回扫描状态
+// GET  /api/scan/result : 返回设备列表
+void handleScan() {
+  setCorsHeaders();
+  if (g_manualScanning || g_scanStarting) {
+    httpServer.send(429, "application/json", "{\"success\":false,\"msg\":\"scanning\"}");
+    return;
+  }
+  g_scanCount = 0;
+  g_manualScanning = true;
+  g_scanStarting = true;   // loop 检测到后执行真正的扫描 (HTTP handler 不直接调 NimBLE, 防并发崩溃)
+  httpServer.send(200, "application/json", "{\"success\":true,\"msg\":\"scanning\"}");
+}
+
+void handleScanStatus() {
+  setCorsHeaders();
+  String json = String("{\"success\":true,\"scanning\":") +
+                (g_manualScanning ? "true" : "false") +
+                ",\"count\":" + String(g_scanCount) + "}";
+  httpServer.send(200, "application/json", json);
+}
+
+void handleScanResult() {
+  setCorsHeaders();
+  if (g_manualScanning) {
+    httpServer.send(200, "application/json", "{\"success\":true,\"scanning\":true,\"devices\":[]}");
+    return;
+  }
+  String json = "{\"success\":true,\"scanning\":false,\"devices\":[";
+  for (int i = 0; i < g_scanCount; i++) {
+    if (i > 0) json += ",";
+    json += "{\"mac\":\"" + String(g_scanList[i].mac) +
+            "\",\"name\":\"" + String(g_scanList[i].name) +
+            "\",\"rssi\":" + String(g_scanList[i].rssi) + "}";
+  }
+  json += "]}";
+  httpServer.send(200, "application/json", json);
+}
+
+// v9.33: 手动扫描执行器 —— 只在 loop 上下文调用 NimBLE (HTTP handler 只设标志)
+void loopScanWork() {
+  if (!g_scanStarting) return;
+  g_scanStarting = false;
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->stop();  // 停掉可能正在运行的自动扫描
+  delay(20);
+  pScan->setScanCallbacks(&g_bmsScanCB);
+  pScan->setActiveScan(true);
+  pScan->setInterval(200);
+  pScan->setWindow(150);
+  bool started = pScan->start(3000, false, true);  // 3 秒
+  if (!started) {
+    g_manualScanning = false;
+    Serial.println("[SCAN-M] 手动扫描 start 失败!");
+  } else {
+    Serial.println("[SCAN-M] 手动扫描已启动 (3s)...");
+  }
+}
+
 // 扫描并连接 BMS (非阻塞: 启动异步扫描, 不阻塞主循环)
 void startBmsConnect() {
   if (bmsConnected || g_doConnect) return;
+  if (g_manualScanning) return;  // 手动扫描进行中, 不启动自动扫描 (避免冲突)
+
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  // v9.37: 扫描进行中则不重复启动 —— 修复"扫描持续占射频拖慢 WiFi/web 后台"
+  if (pScan->isScanning()) return;
 
   unsigned long now = millis();
-  if (now - lastReconnectAttempt < RECONNECT_INTERVAL) return;
+  // v9.33: 失败退避 —— 3s→6s→12s 封顶 10s (BMS 恢复后应尽快发现)
+  unsigned long interval = RECONNECT_INTERVAL;
+  if (g_bmsScanFailCount > 0) {
+    interval = RECONNECT_INTERVAL * (1 << g_bmsScanFailCount);
+    if (interval > 10000) interval = 10000;
+  }
+  if (now - lastReconnectAttempt < interval) return;
   lastReconnectAttempt = now;
 
   Serial.printf("[BMS] 启动异步扫描, 目标: %s\n", g_config.bmsMac);
-  NimBLEScan* pScan = NimBLEDevice::getScan();
   pScan->setScanCallbacks(&g_bmsScanCB);
   pScan->setActiveScan(true);
-  pScan->setInterval(500);   // 扫描间隔 500ms (低占空比, 减少与 WiFi 冲突)
-  pScan->setWindow(100);     // 扫描窗口 100ms (20% 占空比)
+  pScan->setInterval(500);   // 20% 占空比
+  pScan->setWindow(100);
   pScan->start(5000, false, true);  // 5 秒异步扫描
 }
 
@@ -1469,22 +1635,51 @@ bool connectToBms() {
   if (pClient == nullptr) {
     pClient = NimBLEDevice::createClient();
     pClient->setClientCallbacks(&g_clientCB, false);
-    // 连接参数 (参考代码: 间隔60=75ms, 超时400=5s)
-    pClient->setConnectionParams(60, 60, 1, 400);
-    pClient->setConnectTimeout(8000);
+    // v9.14/FIX-27: 连接参数放宽到 30~50ms + 6s 监督超时 (抗多连接挤占)
+    pClient->setConnectionParams(24, 40, 0, 600);
+    pClient->setConnectTimeout(3000);  // v9.33: 8000→3000 (缩短同步阻塞, web 不卡)
   }
 
   if (!pClient->connect(g_advDevice)) {
     Serial.println("[BMS] 连接失败");
+    g_bmsScanFailCount++;
+    if (g_bmsScanFailCount > 4) g_bmsScanFailCount = 4;
+    // v9.5/FIX-22: 连接失败同样销毁 client, 下次重连重建
+    NimBLEDevice::deleteClient(pClient);
+    pClient = nullptr;
     return false;
   }
 
   Serial.printf("[BMS] 已连接, MTU=%u\n", pClient->getMTU());
 
+  // v9.40/v9.43: MTU 检查 —— MTU<100 协商异常 → 有限重试 → 仍低则降级接受 MTU=23 继续
+  if (pClient->getMTU() < 100) {
+    if (g_mtuRetryCount < MTU_MAX_RETRY) {
+      g_mtuRetryCount++;
+      Serial.printf("[BMS] MTU 协商失败 (%u<100, 第%d/%d次), 断开重试\n",
+        pClient->getMTU(), g_mtuRetryCount, MTU_MAX_RETRY);
+      g_bmsScanFailCount++;
+      if (g_bmsScanFailCount > 4) g_bmsScanFailCount = 4;
+      pClient->disconnect();
+      NimBLEDevice::deleteClient(pClient);
+      pClient = nullptr;
+      return false;
+    }
+    g_mtuRetryCount = 0;
+    Serial.printf("[BMS] MTU=%u 重试%d次仍低, 降级接受继续 (520 重连时可再协商)\n",
+      pClient->getMTU(), MTU_MAX_RETRY);
+  } else {
+    g_mtuRetryCount = 0;
+  }
+
   NimBLERemoteService* pService = pClient->getService(SERVICE_UUID);
   if (!pService) {
     Serial.println("[BMS] 未找到服务 0xFFE0");
+    g_bmsScanFailCount++;
+    if (g_bmsScanFailCount > 4) g_bmsScanFailCount = 4;
     pClient->disconnect();
+    NimBLEDevice::deleteClient(pClient);
+    pClient = nullptr;
     return false;
   }
 
@@ -1525,7 +1720,11 @@ bool connectToBms() {
 
   if (!pWriteChar || !pNotifyChar) {
     Serial.println("[BMS] 未找到必要的特征");
+    g_bmsScanFailCount++;
+    if (g_bmsScanFailCount > 4) g_bmsScanFailCount = 4;
     pClient->disconnect();
+    NimBLEDevice::deleteClient(pClient);  // v9.5/FIX-22: 失败即销毁, 避免复用失效对象
+    pClient = nullptr;
     return false;
   }
 
@@ -1533,24 +1732,47 @@ bool connectToBms() {
     pWriteChar->getHandle(), pNotifyChar->getHandle());
 
   // ★FIX-20/v9.3: 第一参按特征能力订阅 (canNotify → CCCD 0x0001 通知 / 否则 0x0002 指示);
-  //               第三参保持原版 true (极空全系 canNotify=true, 与改动前行为逐位一致)
+  //   v9.35: 第三参恢复 true (有响应写, 真实 BMS 会确认 CCCD 写, 订阅必然建立)
   if (!pNotifyChar->subscribe(pNotifyChar->canNotify(), notifyCB, true)) {
     Serial.println("[BMS] 订阅通知失败");
+    g_bmsScanFailCount++;
+    if (g_bmsScanFailCount > 4) g_bmsScanFailCount = 4;
     pClient->disconnect();
+    NimBLEDevice::deleteClient(pClient);  // v9.5/FIX-22: 失败即销毁
+    pClient = nullptr;
     return false;
   }
 
   bmsConnected = true;
   frameBuffer.clear();
 
+  // v9.41: BMS 连接成功 → 立即恢复广播 (客户端可连接取数)。
+  //   安全: 此处 loop 上下文 (connectToBms 由 loop 调用), 非 NimBLE 事件回调,
+  //   不受 FIX-23/v9.6 "回调内不操作广播" 限制; 广播健康检查也会兜底拉起。
+  if (pBleServer) {
+    NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
+    if (!pAdv->isAdvertising()) {
+      pAdv->start();
+      Serial.println("[BLE-Server] BMS 已连接, 广播启动");
+    }
+  }
+
   // 获取初始 RSSI
   g_bmsData.rssi = pClient->getRssi();
 
-  // 发送初始命令 (无延时, 立即发送, 单连接版机制)
+  // 发送初始命令 (无延时, 立即发送)
   sendCommand(CMD_DEVICE_INFO);
   sendCommand(CMD_CELL_INFO);
   lastRequest = millis();
   lastDataTime = millis();
+
+  // v9.38: 补发 BMS 未连接期间缓存的 App 命令 (显示屏/极空 App 先连上中继发的 0x97/0x96)
+  if (g_pendingCmdLen > 0 && pWriteChar) {
+    pWriteChar->writeValue(g_pendingCmd, g_pendingCmdLen, false);
+    Serial.printf("[BLE-Server] 补发缓存命令 %d bytes\n", g_pendingCmdLen);
+    g_pendingCmdLen = 0;
+    lastRequest = millis();  // 补发也算一次请求, 顺延自主轮询避免响应交错
+  }
 
   Serial.println("[BMS] 连接成功");
   return true;
@@ -1564,7 +1786,7 @@ void notifyCB(NimBLERemoteCharacteristic* pChar,
     lastDiagPrint = millis();
     char diagMsg[128];
     snprintf(diagMsg, sizeof(diagMsg), "BMS通知 len=%zu 客户端=%d 订阅=%d",
-      length, pBleServer ? pBleServer->getConnectedCount() : -1, g_subscribedConnCount);
+      length, g_bleClientCount, g_subscribedConnCount);  // v9.33: 自维护计数 (FIX-24: 回调内不查 NimBLE API)
     // ★FIX-8 (完整版): 防越界 —— 通知块 < 4 字节时不能打印前 4 字节
     if (length >= 4) {
       Serial.printf("[DIAG] %s, 前4字节: %02X %02X %02X %02X\n", diagMsg, pData[0], pData[1], pData[2], pData[3]);
@@ -1592,22 +1814,40 @@ void notifyCB(NimBLERemoteCharacteristic* pChar,
 
   if (isFrameHeader) {
     // 数据帧首块: 清空半帧残留, 开始新帧
-    frameBuffer.clear();
+    // v9.34: 若 buffer 里已有上一帧尾带过来的合法帧头残留, 追加合并而非 clear,
+    //          否则清掉合法残留会偶发丢帧; 只有无残留或残留不是帧头 (脏数据) 才清空重新对齐
+    bool bufHasHdr = (frameBuffer.size() >= 4 &&
+                      frameBuffer[0] == 0x55 && frameBuffer[1] == 0xAA &&
+                      frameBuffer[2] == 0xEB && frameBuffer[3] == 0x90);
+    if (frameBuffer.empty() || !bufHasHdr) {
+      frameBuffer.clear();
+    }
     frameBuffer.insert(frameBuffer.end(), pData, pData + length);
   } else if (length >= 2 && pData[0] == 0x41 && pData[1] == 0x54) {
     // ★FIX-14 (完整版): AT 心跳 (41 54...) 由真实 BMS 异步插入, 可能落在帧块之间;
     //               不能吸收进 buffer 污染组帧 (会 CRC 失败丢整帧), 原样透传 (App 自己会跳过)
+    // v9.13/FIX-26: AT 心跳是真机 BMS 存活最强信号 (~150ms 一次), 必须刷新 lastDataTime,
+    //                否则 App 订阅时轮询降为 30s, 真机不主动推 0x02 帧时 30s 内无完整 JK 帧
+    //                → DATA_TIMEOUT(30s) 误判 → 主动断开重连 (表现为"不定时断开又连上")
+    lastDataTime = millis();
     forwardRawToClients(pData, length);
     return;
   } else if (length >= 4 && pData[0] == 0xAA && pData[1] == 0x55 &&
              pData[2] == 0x90 && pData[3] == 0xEB) {
     // ★FIX-14 (完整版): 命令帧回显 (AA 55 90 EB C8..., 字节序与数据帧头 55 AA EB 90 不同),
     //               同样透传不吸收, 避免污染组帧
+    // v9.13/FIX-26: 命令回显同样证明 BMS 存活, 刷新 lastDataTime
+    lastDataTime = millis();
     forwardRawToClients(pData, length);
     return;
   } else if (!frameBuffer.empty()) {
     // 数据帧续块: 吸收进 buffer 继续组帧
-    frameBuffer.insert(frameBuffer.end(), pData, pData + length);
+    // v9.33: 上限保护 —— 脏数据流时 buffer 无限增长会耗尽堆 (OOM); 正常稳态 ≤600B
+    if (frameBuffer.size() + length <= 600) {
+      frameBuffer.insert(frameBuffer.end(), pData, pData + length);
+    } else {
+      frameBuffer.clear();  // 超限: 当前组帧作废, 重新对齐
+    }
   } else {
     // 空闲时的其他非帧数据 (残留续块等): 原样透传 (App 丢弃无帧头垃圾, 与真实 BMS 丢块一致)
     forwardRawToClients(pData, length);
@@ -2102,6 +2342,10 @@ void initWebServer() {
   httpServer.on("/api/reboot", HTTP_POST, handleReboot);
   httpServer.on("/api/wifi/off", HTTP_POST, handleWifiOff);
   httpServer.on("/api/wifi/on", HTTP_POST, handleWifiOn);
+  // v9.17: 手动扫描 (Web 后台"扫描保护板")
+  httpServer.on("/api/scan", HTTP_POST, handleScan);
+  httpServer.on("/api/scan/status", HTTP_GET, handleScanStatus);
+  httpServer.on("/api/scan/result", HTTP_GET, handleScanResult);
 
   // CORS 预检
   httpServer.on("/api/data", HTTP_OPTIONS, handleOptions);
@@ -2276,18 +2520,38 @@ void loop() {
     g_btnPressed = false;
   }
 
-  // 0.5 BLE 广播健康检查 (完整版多客户端: 未达上限时保持广播运行)
+  // 0.5 BLE 广播健康检查 (v9.41/v9.42: BMS 未连接时对客户端隐身, 防抢连挤占 MTU 协商)
   static unsigned long lastAdvCheck = 0;
   if (pBleServer && millis() - lastAdvCheck > 5000) {
     lastAdvCheck = millis();
-    int count = pBleServer->getConnectedCount();
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
-    if (count < MAX_BLE_CLIENTS && !pAdv->isAdvertising()) {
-      Serial.println("[BLE-Server] 广播未运行, 重新启动...");
-      pAdv->start();
-    } else if (count >= MAX_BLE_CLIENTS && pAdv->isAdvertising()) {
-      Serial.println("[BLE-Server] 已达最大连接数, 停止广播");
-      pAdv->stop();
+
+    // v9.41: BMS 未连接时停止广播 —— 防止客户端 (显示屏/极空 App) 先抢连中继,
+    //   挤占 BMS 连接资源导致 MTU 协商失败 (MTU=23) / reason 520。
+    //   BMS 连上后恢复广播, 客户端即可正常连接取数。
+    if (!bmsConnected) {
+      if (pAdv->isAdvertising()) {
+        Serial.println("[BLE-Server] BMS 未连接, 停止广播 (防客户端抢连)");
+        pAdv->stop();
+      }
+      // v9.42: 同时主动断开已连接的客户端 (仅停广播不会断开已建立连接,
+      //   旧客户端仍占用 Server 侧连接槽 → BMS 重连时 MTU 协商照样被挤)。
+      for (int i = 0; i < MAX_BLE_CLIENTS; i++) {
+        if (g_connStates[i].active) {
+          uint16_t h = g_connStates[i].connHandle;
+          Serial.printf("[BLE-Server] BMS 未连接, 断开客户端 handle=%d (释放 Server 侧资源)\n", h);
+          if (pBleServer) pBleServer->disconnect(h);
+        }
+      }
+    } else {
+      // BMS 已连接: 未达上限保持广播
+      if (g_bleClientCount < MAX_BLE_CLIENTS && !pAdv->isAdvertising()) {
+        Serial.println("[BLE-Server] BMS 已连接, 广播恢复");
+        pAdv->start();
+      } else if (g_bleClientCount >= MAX_BLE_CLIENTS && pAdv->isAdvertising()) {
+        Serial.println("[BLE-Server] 已达最大连接数, 停止广播");
+        pAdv->stop();
+      }
     }
   }
 
@@ -2296,21 +2560,16 @@ void loop() {
     httpServer.handleClient();
     webSocketServer.loop();
 
-    // WiFi 10分钟自动关闭
-    if (millis() - g_lastWebRequest > WIFI_AUTO_OFF_MS) {
-      Serial.println("[WiFi] 10分钟无操作, 自动关闭 WiFi...");
-      webSocketServer.close();
-      httpServer.stop();
-      WiFi.softAPdisconnect(true);
-      g_wifiEnabled = false;
-      Serial.println("[WiFi] 已关闭, BLE 继续运行 (长按BOOT 5秒重启恢复)");
-    }
+    // v9.33: WiFi 自动关闭已禁用 —— 中继场景 WiFi 必须常开 (App/显示屏/后台随时可能访问),
+    //   10 分钟无操作就关 WiFi 导致"web 打不开" (用户隔一段时间再看就关掉了, 多次误判为设备卡死)
+    // if (millis() - g_lastWebRequest > WIFI_AUTO_OFF_MS) { ... }
   }
 
   // 1.5 ★ 4G/GPS 串口处理: 接收 DTU 下行指令 + 双模式定时上报 (millis 节流, 不阻塞 BLE/WebSocket)
   handle4G();
 
   // 2. BLE 连接管理 (非阻塞: 异步扫描 → 扫到后连接)
+  loopScanWork();  // v9.33: 手动扫描执行器 (loop 上下文, 安全调用 NimBLE)
   if (!bmsConnected) {
     if (g_doConnect) {
       g_doConnect = false;
@@ -2343,6 +2602,8 @@ void loop() {
     Serial.println("[BMS] 数据超时, 重连...");
     if (pClient) {
       pClient->disconnect();
+      NimBLEDevice::deleteClient(pClient);  // v9.5/FIX-22: 超时断连也销毁, 防止下次复用失效对象
+      pClient = nullptr;
     }
     bmsConnected = false;
     g_advDevice = nullptr;

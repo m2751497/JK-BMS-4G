@@ -47,6 +47,22 @@ function handleBMSData(array $data): void
 {
     $now = time() * 1000;
 
+    // ★修复: 0x01 帧(0x96 设置帧响应)不含 MOS/均衡状态 —— 原解析用推断偏移(118/122/126)
+    //   读这些字节多为 0, 每轮询周期都来一帧, 会把 0x02 电芯帧(真实偏移 166/167/169)
+    //   的正确 MOS/均衡状态覆盖成 false (表现为"均衡状态永远不变")。
+    //   0x01 帧仅更新额定容量, 不写库、不覆盖其他字段。
+    if (($data['frameType'] ?? null) === 0x01) {
+        if (isset($data['capNominal'])) {
+            $cache = readCache();
+            if (isset($cache['bms']) && is_array($cache['bms'])) {
+                $cache['bms']['capNominal'] = $data['capNominal'];
+                $cache['lastUpdate'] = $now;
+                writeCache($cache);
+            }
+        }
+        return;
+    }
+
     try {
         $ins = db()->prepare(
             'INSERT INTO bms_data (
