@@ -51,7 +51,7 @@
 - NimBLE-Arduino ≥ 2.2.2（双 FFE1 必须用 NimBLE，勿用 Bluedroid）
 - WebSockets / ArduinoJson
 
-**编译要点（4MB Flash + OTA）**：Tools → Board 选 `ESP32S3 Dev Module`；Partition Scheme 选 **Custom**（用 `02-ESP32固件/partitions.csv` 自定义分区：双 APP 各 1.94MB，支持 OTA）；Flash Size 选 **4MB**；PSRAM 按板子选（Super Mini 一般 OPI）
+**编译要点（4MB Flash + OTA）**：Tools → Board 选 `ESP32S3 Dev Module`；Partition Scheme 选 **Custom**（用 `02-ESP32固件/esp32s3-gateway/partitions.csv` 自定义分区：双 APP 各 1.94MB，支持 OTA）；Flash Size 选 **4MB**；**PSRAM 选 `QSPI PSRAM`**（实测 2MB PSRAM 为 QSPI 模式）；USB CDC On Boot=Enabled（原生 USB 口出串口日志）
 
 **固件功能**（BLE 读取+中继基于「中继完整版 v9.3」）：
 - **BLE 读取**：帧级转发（完整帧 + CRC 校验通过才转发，坏帧自愈对齐）、帧头双兼容（老版 300B / 新版 ~200B）
