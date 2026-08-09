@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.16）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.17）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -1014,7 +1014,7 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='app'>\n"
 "<div class='header'>\n"
 "<div class='header-top'>\n"
-"<span class='app-title' id='appTitle'>JK-BMS 4G 远程监控网关<sub class='app-version'>v2.16</sub></span>\n"
+"<span class='app-title' id='appTitle'>JK-BMS 4G 远程监控网关<sub class='app-version'>v2.17</sub></span>\n"
 "</div>\n"
 "</div>\n"
 "<div class='content' id='content'>\n"
