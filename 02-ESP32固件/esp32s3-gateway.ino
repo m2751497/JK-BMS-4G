@@ -67,6 +67,7 @@
 #include <WebSocketsServer.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <Update.h>
 #include <string>
 #include "esp_task_wdt.h"   // 自愈: 任务看门狗 (ESP32 卡死自动重启)
 
@@ -537,6 +538,55 @@ void handleGetData() {
   httpServer.send(200, "application/json", json);
 }
 
+// ==================== OTA 固件升级 (v2.14, Web 网页上传) ====================
+// 分区表 default_16MB 自带双 OTA 分区 (app0/app1 各 6.25MB), 上传新固件写另一分区,
+// 成功后切换并重启; 失败自动回滚到旧固件。
+
+// 上传分块回调
+void handleOtaUpload() {
+  HTTPUpload& up = httpServer.upload();
+  if (up.status == UPLOAD_FILE_START) {
+    Serial.printf("[OTA] 开始接收固件: %s, 大小=%u 字节\n", up.filename.c_str(), up.totalSize);
+    if (up.totalSize > 0x600000) {   // OTA 分区约 6MB, 预留校验
+      Serial.println("[OTA] 固件过大, 拒绝");
+      Update.abort();
+      return;
+    }
+    if (!Update.begin(up.totalSize)) {
+      Update.printError(Serial);
+    }
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(up.buf, up.currentSize) != up.currentSize) {
+      Update.printError(Serial);
+    }
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      Serial.println("[OTA] 固件写入成功, 校验通过");
+    } else {
+      Update.printError(Serial);
+    }
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    Serial.println("[OTA] 上传中断");
+  }
+}
+
+// 上传完成回调
+void handleOtaDone() {
+  if (Update.hasError()) {
+    Serial.println("[OTA] 升级失败, 保持旧固件");
+    httpServer.send(500, "application/json",
+      "{\"success\":false,\"message\":\"升级失败, 已保持旧固件, 请重试\"}");
+  } else {
+    Serial.println("[OTA] 升级成功, 2 秒后重启...");
+    httpServer.send(200, "application/json",
+      "{\"success\":true,\"message\":\"升级成功, 设备重启中...\"}");
+    httpServer.client().stop();
+    delay(1500);
+    ESP.restart();
+  }
+}
+
 // API: 获取系统状态
 void handleGetStatus() {
   setCorsHeaders();
@@ -1000,6 +1050,7 @@ const char INDEX_HTML[] PROGMEM =
 "function updateWifiUI(enabled){const s=$('wifiStatus');if(enabled){s.textContent='已开启';s.className='wifi-status-value wifi-on';$('wifiOffBtn').style.display='flex';$('wifiOnBtn').style.display='none'}else{s.textContent='已关闭';s.className='wifi-status-value wifi-off';$('wifiOffBtn').style.display='none';$('wifiOnBtn').style.display='flex'}}\n"
 "async function saveApConfig(){const s=$('apSsidInput').value.trim();const p=$('apPasswordInput').value.trim();if(!s){showToast('AP名称不能为空',true);return}if(p.length>0&&p.length<8){showToast('密码至少8位',true);return}openModal('保存AP配置','保存后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apSsid:s,apPassword:p})});const d=await r.json();if(d.success){showToast('AP配置已保存, 正在重启...');addLog('AP配置已保存: SSID='+s+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
 "async function turnOffWifi(){openModal('关闭WiFi','关闭后仅BLE运行,节省资源,确定？',async()=>{try{await fetch('/api/wifi/off',{method:'POST'});addLog('WiFi已关闭 (BLE继续运行)');updateWifiUI(false);showToast('WiFi已关闭')}catch(e){showToast('操作失败',true)}})}\n"
+"function uploadOta(){const f=$('otaFile').files[0];if(!f){showToast('请先选择 .bin 固件文件',true);return}if(!f.name.toLowerCase().endsWith('.bin')){showToast('请选择 .bin 文件',true);return}openModal('固件升级','将上传 '+f.name+' ('+(f.size/1024/1024).toFixed(2)+' MB)，上传完成后设备自动重启；失败自动回滚。确定？',()=>{const xhr=new XMLHttpRequest();xhr.open('POST','/api/ota',true);xhr.upload.onprogress=e=>{if(e.lengthComputable){$('otaProgress').style.display='block';$('otaProgressBar').style.width=Math.round(e.loaded/e.total*100)+'%'}};xhr.onload=()=>{try{const d=JSON.parse(xhr.responseText);$('otaStatus').textContent=d.success?('✅ '+d.message):('❌ '+d.message);if(d.success){showToast('升级成功, 设备重启中...')}else{showToast(d.message,true)}}catch(e){$('otaStatus').textContent='❌ 响应异常';showToast('升级失败',true)}};xhr.onerror=()=>{$('otaStatus').textContent='❌ 上传失败(连接中断)';showToast('上传失败',true)};const fd=new FormData();fd.append('fw',f);xhr.send(fd)};)}\n"
 "async function turnOnWifi(){openModal('开启WiFi','正在开启WiFi,设备将短暂重启网络服务,确定？',async()=>{try{await fetch('/api/wifi/on',{method:'POST'});addLog('WiFi已开启');updateWifiUI(true);showToast('WiFi已开启')}catch(e){showToast('操作失败',true)}})}\n"
 "async function init(){fetchConfig();fetchData();fetchStatus();connectWebSocket();const ip=window.location.hostname;$('barIp').textContent=ip;addLog('系统启动完成');addLog('访问地址: http://'+ip);setInterval(fetchData,3000);setInterval(fetchStatus,2000)}\n"
 "init();\n"
