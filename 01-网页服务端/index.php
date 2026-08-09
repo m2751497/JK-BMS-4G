@@ -404,7 +404,7 @@ function updateBms(d){
       <div class="data-row"><span class="data-label">循环次数</span><span>${d.cycleCount??'--'}</span></div>
       <div class="data-row"><span class="data-label">运行时间</span><span>${d.runtimeStr??'--'}</span></div>
       <div class="data-row"><span class="data-label">MOS 状态</span><span>${mos}</span></div>
-      <div class="data-row" style="margin-top:6px;border-top:1px solid var(--line);padding-top:6px"><span class="data-label">剩余 / 额定容量</span><span class="big">${(d.capRemain??0).toFixed(2)} / ${(d.capNominal??0).toFixed(2)} Ah</span></div>
+      <div class="data-row"><span class="data-label">剩余 / 额定容量</span><span class="big">${(d.capRemain??0).toFixed(2)} / ${(d.capNominal??0).toFixed(2)} Ah</span></div>
       <div class="data-row"><span class="data-label">循环容量</span><span>${(d.cycleCap??0).toFixed(3)} Ah</span></div>
       <div class="data-row"><span class="data-label">当前续航（估算）</span><span class="big" style="color:var(--green)">${rangeKmText()} km</span></div>
     </div>`;
