@@ -5,15 +5,15 @@
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
  *      V20S 双 FFE1(0x03 写 / 0x05 通知) 与 V17/V18/V19 单 FFE1(写+通知一体) 及其他
  *      handle 布局全兼容, 不再硬编码 0x03/0x05; 订阅按特征能力选 notify/indicate(FIX-20)
- *   2. BLE 中继服务: 完整版 v9.3 实现 —— 多客户端 (MAX_BLE_CLIENTS=5) + 帧级转发
+ *   2. BLE 中继服务: 中继完整版 v9.43 实现 —— 多客户端 (MAX_BLE_CLIENTS=5) + 帧级转发
  *      (重组完整帧 + CRC 校验通过后才按各客户端 MTU 分块推送, 150B 块模拟真实 BMS) +
  *      双通道 (数据帧帧级干净转发 / AT 心跳与命令帧回显原样透传, 解决 App 6 秒断开 reason=531);
  *      服务结构对齐真实 BMS: FFE0(FFE1/FFE2/FFE3) + FF10(FF11/FF12);
- *      广播名使用中继名称 g_config.relayName (FIX-17/v9: Web 后台可设、未设置默认 "JK-RELAY",
- *      不再固定短名 "JK"; UTF-8 安全截断 FIX-18/v9.1), 厂商数据移入扫描响应
+ *      广播名使用中继名称 g_config.relayName (Web 后台可设、默认 "JK-RELAY", UTF-8 安全截断);
+ *      BMS 未连接时中继隐身 (停广播+断开旧客户端, 防抢连挤 MTU 协商) v9.41/42
  *   3. Web 管理后台: WiFi AP 模式 (192.168.4.1), HTTP REST API + WebSocket(81) 实时推送,
- *      Preferences 配置持久化 (BMS MAC / AP 账号密码 / 中继名称)
- *   4. WiFi 射频策略: 低发射功率 8.5dBm + beacon 200ms + 10 分钟无操作自动关闭 WiFi (BLE 继续运行)
+ *      Preferences 配置持久化 (BMS MAC / AP 账号密码 / 中继名称); WiFi 常开 (v9.33 不自动关闭)
+ *   4. WiFi 射频策略: 低发射功率 8.5dBm + beacon 100ms (AP 响应优先)
  *   5. 4G/GPS 串口: UART1 (TX=13, RX=12) 接银尔达 M100PG-DTU, 支持指令 chaxun / getcsq /
  *      getgps / getblestatus, GPS 查询指令 config,get,gpsext, 输出 gps:fix,lonDir,lon,latDir,lat,speed
  *   6. 双模式定时上报 (核心新增): 解析 UART1 下发的 mode,realtime/track,<bms_ms>,<gps_ms> 指令,
@@ -26,10 +26,11 @@
  *      移动自动恢复 2s 实时上报 (网页关也实时), 打开网页(realtime 指令)始终 2s;
  *      按 BMS/GPS 间隔 (毫秒) 定时上报 BMS 原始帧 b:r,<hex> 与 GPS 文本, millis() 节流不阻塞
  *
- * 来源 (v2.3 起):
- *   - BLE 客户端 + BLE 中继 + Web 后台: 中继完整版.txt (修复版 v9.3, 约 1903 行) ——
- *     BMS 读取与中继以完整版为准 (帧级转发 / 双通道 / 多客户端 / FIX-1~20,
- *     含 v9 广播长名 FIX-17/18、v9.3 特征选择兼容 FIX-19/20)
+ * 来源 (v2.15 起):
+ *   - BLE 客户端 + BLE 中继 + Web 后台: 中继完整版 v9.43 (修复版, S3/C3 通用) ——
+ *     BMS 读取与中继以完整版为准 (帧级转发 / 双通道 / 多客户端 / FIX-1~27,
+ *     含 v9.13 AT心跳保活、v9.14 连接参数、v9.33 扫描退避/WiFi常开、v9.38 命令缓存补发、
+ *     v9.40/43 MTU降级、v9.41/42 隐身广播、v9.17 手动扫描)
  *   - 4G/GPS 固件 (UART1 串口初始化 / 指令处理 / GPS 解析 / 双模式上报): 参考代码2\极空保护板-蓝牙4G方案\esp32s3\esp32s3.ino
  *   合并规则: BLE 部分以 中继完整版.txt 为准, esp32s3.ino 仅并入 4G/GPS 串口与指令处理部分;
  *   notifyCB 在完整版基础上保留 lastRawFrame 保存 (供 b:r,<hex> 4G 上报)
