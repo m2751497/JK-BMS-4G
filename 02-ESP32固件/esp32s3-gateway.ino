@@ -200,6 +200,7 @@ struct GatewayConfig {
   char bmsMac[20] = "00:00:00:00:00:00";
   char apSsid[32] = "JK-BMS";
   char apPassword[64] = "12345678";
+  int cellInfoOffset = 32;  // v2.16/v9.44: 0x02 电芯帧字段偏移 (可配置, 默认 32, 24S BMS 实测值)
 };
 
 GatewayConfig g_config;
@@ -349,7 +350,8 @@ void parseCellInfo(const uint8_t* data, size_t len) {
   //   cmd=0x02 电芯帧 24 节电压 2B/节从帧内第 32 字节开始, 总压 get32(150)=118+32、SOC/容量自洽
   //   (总压 79.9V/SOC 78%/容量 70Ah)。早期 v2.9 曾用 cellsEnabled>24?32:0 动态判断,
   //   对 24S 会错选 off2=0 → 电流/电压/温度全错位, 已回退。
-  const size_t off = 32;
+  //   v2.16+ (v9.44 方式): 偏移可经 Web 后台「BLE 中继」区配置 (0~64, 默认 32), 换布局 BMS 时调整立即生效
+  const size_t off = (size_t)g_config.cellInfoOffset;
 
   float minCellV = 100.0f;
   float maxCellV = -100.0f;
@@ -636,6 +638,7 @@ void handleGetConfig() {
   doc["wifiEnabled"] = g_wifiEnabled;
   doc["httpPort"] = HTTP_PORT;
   doc["wsPort"] = WS_PORT;
+  doc["cellInfoOffset"] = g_config.cellInfoOffset;  // v9.44
 
   String output;
   serializeJson(doc, output);
@@ -697,6 +700,15 @@ void handlePostConfig() {
     }
   }
 
+  if (doc.containsKey("cellInfoOffset")) {  // v9.44: 电芯帧偏移可配置 (0~64, 偶数), 立即生效
+    int off = doc["cellInfoOffset"].as<int>();
+    if (off >= 0 && off <= 64 && (off % 2) == 0) {
+      g_config.cellInfoOffset = off;
+      configDirty = true;
+      Serial.printf("[Config] 电芯帧偏移已更新: %d (立即生效)\n", g_config.cellInfoOffset);
+    }
+  }
+
   // 保存到 NVS
   if (configDirty) {
     prefs.begin("gateway", false);
@@ -704,6 +716,7 @@ void handlePostConfig() {
     prefs.putString("bmsMac", g_config.bmsMac);
     prefs.putString("apSsid", g_config.apSsid);
     prefs.putString("apPassword", g_config.apPassword);
+    prefs.putInt("cellInfoOffset", g_config.cellInfoOffset);
     prefs.end();
     configDirty = false;
   }
@@ -1010,6 +1023,8 @@ const char INDEX_HTML[] PROGMEM =
 "<div style='flex:1'>\n"
 "<div class='config-label'>中继名称</div>\n"
 "<input type='text' class='config-input' id='relayName' maxlength='31' placeholder='JK-BMS-Relay'>\n"
+"<div class='config-label' style='margin-top:10px'>电芯帧偏移 (0x02 帧, 0~64 偶数)</div>\n"
+"<input type='number' class='config-input' id='cellInfoOffset' min='0' max='64' step='2' value='32'>\n"
 "<div style='margin-top:10px'>\n"
 "<button class='btn btn-save' onclick='saveRelayName()' style='width:100%'>保存中继名称</button>\n"
 "</div>\n"
@@ -1077,12 +1092,12 @@ const char INDEX_HTML[] PROGMEM =
 "function connectWebSocket(){const p=location.protocol==='https:'?'wss:':'ws:';state.ws=new WebSocket(p+'//'+location.hostname+':81');state.ws.onopen=()=>{};state.ws.onmessage=e=>{const d=JSON.parse(e.data);if(typeof d.bmsConnected!=='undefined'){updateSysStatus(d)}else if(typeof d.diag!=='undefined'){addLog(d.diag)}else{updateBmsData(d)}};state.ws.onclose=()=>{setTimeout(connectWebSocket,5000)}}\n"
 "async function fetchData(){try{const d=await(await fetch('/api/data')).json();updateBmsData(d)}catch(e){}}\n"
 "async function fetchStatus(){try{const d=await(await fetch('/api/status')).json();updateSysStatus(d)}catch(e){}}\n"
-"async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
+"async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';$('cellInfoOffset').value=(d.cellInfoOffset!=null)?d.cellInfoOffset:32;updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
 "async function scanBms(){const box=$('scanResult');box.innerHTML='扫描中(约3秒)...';try{const r=await fetch('/api/scan',{method:'POST'});if(!r.ok)return;for(let i=0;i<20;i++){await new Promise(res=>setTimeout(res,300));const s=await(await fetch('/api/scan/status')).json();if(!s.scanning)break}const res=await(await fetch('/api/scan/result')).json();if(!res.devices||!res.devices.length){box.innerHTML='未发现蓝牙设备';return}box.innerHTML='';res.devices.forEach(dev=>{const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;padding:7px 8px;border-bottom:1px solid #0f1626;cursor:pointer';row.onclick=()=>useBms(dev.mac,dev.name);const nm=document.createElement('span');nm.textContent=dev.name||'(无名称)';nm.style.color=dev.name?'#e6f1ff':'#8892b0';const mc=document.createElement('span');mc.style.cssText='color:#64ffda;font-family:monospace';mc.textContent=dev.mac;const rs=document.createElement('span');rs.textContent=dev.rssi+'dBm';row.appendChild(nm);row.appendChild(mc);row.appendChild(rs);box.appendChild(row)})}catch(e){box.innerHTML='扫描失败'}}\n"
 "function useBms(mac,name){$('bmsMacInput').value=mac;openModal('连接 BMS','确定连接 '+mac+(name?' ('+name+')':'')+' 吗？',async()=>{try{addLog('通过扫描选择 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'})},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
 "async function connectBMS(){const mac=$('bmsMacInput').value.trim();if(!mac){showToast('请先输入 MAC 地址',true);return}openModal('连接 BMS','确定要连接 '+mac+' 吗？\\n(将自动保存MAC)',async()=>{try{addLog('正在连接 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'});addLog('BMS 连接请求已发送')},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
 "async function disconnectBMS(){openModal('断开 BMS','确定要断开当前 BMS 连接吗？',async()=>{try{await fetch('/api/reconnect',{method:'POST'});addLog('已断开 BMS 连接')}catch(e){}})}\n"
-"async function saveRelayName(){const n=$('relayName').value.trim();if(!n){showToast('名称不能为空',true);return}openModal('保存中继名','保存后将自动重启设备使BLE广播名称生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n})});const d=await r.json();if(d.success){showToast('中继名已保存, 正在重启...');addLog('中继名已保存: '+n+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
+"async function saveRelayName(){const n=$('relayName').value.trim();const off=parseInt($('cellInfoOffset').value)||32;openModal('保存配置','保存中继名与电芯帧偏移('+off+')后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n,cellInfoOffset:off})});const d=await r.json();if(d.success){showToast('配置已保存, 正在重启...');addLog('中继名: '+n+' 偏移: '+off+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
 "function updateWifiUI(enabled){const s=$('wifiStatus');if(enabled){s.textContent='已开启';s.className='wifi-status-value wifi-on';$('wifiOffBtn').style.display='flex';$('wifiOnBtn').style.display='none'}else{s.textContent='已关闭';s.className='wifi-status-value wifi-off';$('wifiOffBtn').style.display='none';$('wifiOnBtn').style.display='flex'}}\n"
 "async function saveApConfig(){const s=$('apSsidInput').value.trim();const p=$('apPasswordInput').value.trim();if(!s){showToast('AP名称不能为空',true);return}if(p.length>0&&p.length<8){showToast('密码至少8位',true);return}openModal('保存AP配置','保存后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apSsid:s,apPassword:p})});const d=await r.json();if(d.success){showToast('AP配置已保存, 正在重启...');addLog('AP配置已保存: SSID='+s+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
 "async function turnOffWifi(){openModal('关闭WiFi','关闭后仅BLE运行,节省资源,确定？',async()=>{try{await fetch('/api/wifi/off',{method:'POST'});addLog('WiFi已关闭 (BLE继续运行)');updateWifiUI(false);showToast('WiFi已关闭')}catch(e){showToast('操作失败',true)}})}\n"
@@ -2394,9 +2409,12 @@ void loadConfig() {
     strncpy(g_config.apPassword, savedApPass.c_str(), 63);
     g_config.apPassword[63] = '\0';
   }
+  g_config.cellInfoOffset = prefs.getInt("cellInfoOffset", 32);  // v9.44: 电芯帧偏移
+  if (g_config.cellInfoOffset < 0 || g_config.cellInfoOffset > 64) g_config.cellInfoOffset = 32;
   prefs.end();
   Serial.printf("[Config] 中继名称: %s\n", g_config.relayName);
   Serial.printf("[Config] BMS MAC: %s\n", g_config.bmsMac);
+  Serial.printf("[Config] 电芯帧偏移: %d\n", g_config.cellInfoOffset);
   Serial.printf("[Config] AP SSID: %s\n", g_config.apSsid);
 }
 
