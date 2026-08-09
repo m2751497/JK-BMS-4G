@@ -377,8 +377,10 @@ switch ($action) {
         }
 
         $learning = getAppSetting('learningEnabled', 'true');
-        // 学习状态 + 最近学习历史（让用户确认学习确实在跑）
-        $phase = getAppSetting('learnPhase', 'idle');
+        // 学习状态（随充随学 v2.14）: charging=充电中 / ready=基准就绪 / no_base=等待首次充电
+        $wasCharging = getAppSetting('learnWasCharging', 'false') === 'true';
+        $hasBase = (float)getAppSetting('learnLastEndCap', '0') > 0;
+        $phase = $wasCharging ? 'charging' : ($hasBase ? 'ready' : 'no_base');
         $history = [];
         try {
             $st = db()->query(

@@ -136,7 +136,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);overflow
         <div id="learn-history" style="margin-top:6px;font-size:12px;color:var(--sub)"></div>
         <div style="margin-top:8px;font-size:12px;color:var(--sub)">
           续航 = 剩余容量(Ah) × 里程基数(km/Ah)<br>
-          自动学习：充满(98%+)后记录放电里程与消耗电量，下次充电时自动修正基数
+          自动学习：每次充电结束记录基准，下次充电时用消耗电量与轨迹里程自动修正基数（不要求充满）
         </div>
       </div>
     </div>
@@ -450,11 +450,13 @@ function updateRange(r){
   // 学习运行状态 + 历史记录
   const ls = $('learningStatus');
   if (ls){
-    const ph = r.learnPhase === 'tracking'
-      ? '⏳ 追踪中：已记录满充起点，下次充电时结算'
-      : '💤 等待满充：充电到 98%+ 自动开始（需充电数据上报）';
+    const ph = r.learnPhase === 'charging'
+      ? '⏳ 充电中… 结束后记录基准，下次充电自动结算'
+      : r.learnPhase === 'ready'
+        ? '✅ 基准就绪：上次充电结束容量已记录，下次充电时自动结算'
+        : '💤 等待首次充电：充一次电（任意电量）后建立基准';
     ls.textContent = (r.learningEnabled === false ? '学习已关闭' : ph);
-    ls.style.color = r.learnPhase === 'tracking' ? 'var(--yellow)' : 'var(--sub)';
+    ls.style.color = r.learnPhase === 'charging' ? 'var(--yellow)' : 'var(--sub)';
   }
   const lh = $('learn-history');
   if (lh){

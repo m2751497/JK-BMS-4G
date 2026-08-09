@@ -4,9 +4,9 @@ if (!defined('JK_INCLUDED')) { http_response_code(403); exit('forbidden'); }
 /**
  * 里程计算与自动学习
  *  - 实时续航：剩余容量(Ah) × 里程基数(km/Ah)
- *  - 里程基数自动学习：满充(SOC≥98% 且充电)开始追踪，再次充电结束，
- *    GPS 里程 ÷ 消耗电量(Ah) 实测修正基数（旧×0.7 + 实测×0.3 加权）
- *    用该周期 GPS 轨迹距离 / 消耗 Ah 计算 km/Ah，70/30 加权平滑更新
+ *  - 里程基数自动学习（随充随学）：任意一次充电周期都学，不要求满充 ——
+ *    充电结束记录当时剩余容量作基准，下次充电开始时用 基准-当前容量 算消耗，
+ *    该周期 GPS 轨迹距离 ÷ 消耗(Ah) = 实测 km/Ah，旧×0.7 + 实测×0.3 加权平滑更新
  *  - haversine 球面距离、WGS84→GCJ02 坐标转换
  */
 
@@ -47,50 +47,49 @@ function calcRangeKm(?float $capRemain): ?float
  */
 function updateRangeLearning(array $data): void
 {
-    // 从 SQLite 恢复学习状态（跨请求持久化，替代已废弃的 static 方案）
-    $phase           = getAppSetting('learnPhase', 'idle');
-    $startTs         = (int)getAppSetting('learnStartTs', '0');
-    $startCap        = (float)getAppSetting('learnStartCap', '0');
-    $wasDischarging  = getAppSetting('learnWasDischarging', 'false') === 'true';
-
     // 学习开关（网页「设置」页可在线关闭，实时生效）
     if (getAppSetting('learningEnabled', 'true') !== 'true') {
-        setAppSetting('learnPhase', 'idle');
-        setAppSetting('learnWasDischarging', 'false');
+        setAppSetting('learnWasCharging', 'false');
         return;
     }
 
     $current = $data['current'] ?? 0;
     // 极空 BMS 协议约定：放电为负 / 充电为正（与网页显示一致）
-    // v2.13: 充电阈值放宽到 0.1A（充满后涓流/均衡电流小, 原 0.5A 导致永远抓不到"满充"帧）
-    $isCharging    = $current > 0.1;    // 充电 = 正电流
-    $soc = $data['soc'] ?? 0;
-    $capRemain = $data['capRemain'] ?? 0;
-    $now = time() * 1000;
+    $isCharging = $current > 0.1;    // 充电 = 正电流（阈值 0.1A，涓流也算）
+    $capRemain  = (float)($data['capRemain'] ?? 0);
+    $now        = time() * 1000;
 
-    if ($phase === 'idle') {
-        // 等待满充：SOC >= 98% 且正在充电 (v2.13: 99→98 放宽, 原条件几乎不可能触发)
-        if ($soc >= 98 && $isCharging) {
-            setAppSetting('learnPhase', 'tracking');
-            setAppSetting('learnStartTs', (string)$now);
-            setAppSetting('learnStartCap', (string)$capRemain);
-            ingestLog("[里程学习] 检测到满充, 开始追踪放电周期 SOC={$soc}% cap={$capRemain}Ah");
-        }
-    } elseif ($phase === 'tracking') {
-        // 追踪中：检测充电再次开始（放电周期结束）
-        if ($isCharging && $wasDischarging) {
-            $capUsed = $startCap - $capRemain;
+    $wasCharging = getAppSetting('learnWasCharging', 'false') === 'true';
+    $lastEndCap  = (float)getAppSetting('learnLastEndCap', '0');
+    $lastEndTs   = (int)getAppSetting('learnEndTs', '0');
+
+    // ★v2.14 随充随学：任何一次充电周期都学习，不要求满充。
+    //   充电结束 → 记录当时剩余容量作基准；下次充电开始 → 用基准-当前容量算消耗并结算。
+
+    // ① 充电开始（非充→充）：用上次充电结束的容量基准结算
+    if ($isCharging && !$wasCharging) {
+        if ($lastEndCap > 0 && $lastEndTs > 0) {
+            $capUsed = $lastEndCap - $capRemain;   // 上次充完 → 本次插电之间的消耗
             if ($capUsed > 0.5) {
-                calculateLearnedFactor($startTs, $now, $capUsed);
-            } else {
-                ingestLog("[里程学习] 消耗过少({$capUsed}Ah), 跳过本次计算");
+                calculateLearnedFactor($lastEndTs, $now, $capUsed);
+            } elseif ($capUsed > 0) {
+                ingestLog("[里程学习] 消耗过少(" . round($capUsed, 2) . "Ah), 跳过本次计算");
             }
-            setAppSetting('learnPhase', 'idle');
-            setAppSetting('learnWasDischarging', 'false');
         }
-        // 放电 = 负电流；每帧都记录，保证跨请求也能感知放电状态
-        setAppSetting('learnWasDischarging', $current < -0.1 ? 'true' : 'false');
+        // 本次充电开始后，等待充电结束再建立新基准
+        setAppSetting('learnLastEndCap', '0');
+        setAppSetting('learnEndTs', '0');
     }
+
+    // ② 充电结束（充→非充）：记录充电结束容量作为下次结算基准
+    if (!$isCharging && $wasCharging) {
+        setAppSetting('learnLastEndCap', (string)$capRemain);
+        setAppSetting('learnEndTs', (string)$now);
+        ingestLog("[里程学习] 充电结束, 记录基准容量=" . round($capRemain, 2)
+            . "Ah (下次充电开始时结算此周期 km/Ah)");
+    }
+
+    setAppSetting('learnWasCharging', $isCharging ? 'true' : 'false');
 }
 
 /** 计算学习因子：GPS 轨迹距离 / 消耗容量，加权更新 */
