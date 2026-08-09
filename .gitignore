@@ -24,3 +24,4 @@ Thumbs.db
 .idea/
 .vscode/
 02-ESP32固件/esp32s3-gateway/build/
+02-ESP32固件/psram-check/build/
