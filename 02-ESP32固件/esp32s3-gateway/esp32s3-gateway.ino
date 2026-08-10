@@ -573,7 +573,7 @@ void handleGetData() {
 }
 
 // ==================== OTA 固件升级 (v2.14, Web 网页上传) ====================
-// 分区表 default_16MB 自带双 OTA 分区 (app0/app1 各 6.25MB), 上传新固件写另一分区,
+// 分区表 4MB 双 OTA (app0/app1 各 1.94MB, 见 partitions.csv), 上传新固件写另一分区,
 // 成功后切换并重启; 失败自动回滚到旧固件。
 
 // 上传分块回调
@@ -581,7 +581,7 @@ void handleOtaUpload() {
   HTTPUpload& up = httpServer.upload();
   if (up.status == UPLOAD_FILE_START) {
     Serial.printf("[OTA] 开始接收固件: %s, 大小=%u 字节\n", up.filename.c_str(), up.totalSize);
-    if (up.totalSize > 0x600000) {   // OTA 分区约 6MB, 预留校验
+    if (up.totalSize > 0x1D0000) {   // OTA 分区约 1.94MB, 预留校验余量
       Serial.println("[OTA] 固件过大, 拒绝");
       Update.abort();
       return;
@@ -976,16 +976,9 @@ const char INDEX_HTML[] PROGMEM =
 ".scan-item-rssi{font-size:13px;font-weight:600;color:#64ffda}\n"
 ".scan-item-rssi.weak{color:#ff4757}\n"
 ".scan-item-rssi.medium{color:#ffa502}\n"
-".log-section{background:#161b2e;border-radius:12px;padding:16px;margin-bottom:0}\n"
-".log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}\n"
-".log-header h2{font-size:16px;font-weight:600;color:#fff}\n"
-".log-clear{font-size:12px;color:#8892b0;background:none;border:none;cursor:pointer;padding:4px 8px}\n"
-".log-clear:hover{color:#ff4757}\n"
-".log-list{max-height:150px;overflow-y:auto;background:#0a0e17;border-radius:8px;padding:8px}\n"
 ".log-item{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;color:#8892b0;padding:4px 0;line-height:1.4;word-break:break-all}\n"
 ".log-item .time{color:#64ffda}\n"
 ".log-item .msg{color:#e0e6ed}\n"
-".log-empty{text-align:center;color:#4a5568;font-size:12px;padding:20px}\n"
 ".bottom-bar{display:none}\n"
 ".bar-btn{width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);border-radius:12px;cursor:pointer;transition:background .2s}\n"
 ".bar-btn:active{background:rgba(255,255,255,.2)}\n"
@@ -1014,16 +1007,15 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='app'>\n"
 "<div class='header'>\n"
 "<div class='header-top'>\n"
-"<span class='app-title' id='appTitle'>JK-BMS 4G 远程监控网关<sub class='app-version'>v2.17</sub></span>\n"
+"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.17</sub></span>\n"
 "</div>\n"
 "</div>\n"
 "<div class='content' id='content'>\n"
 "<div class='section'>\n"
 "<div class='section-title'><h2>系统状态</h2></div>\n"
-"<div class='sys-status-item'><span class='label'>保护板(BMS)</span><span class='value-group'><span class='value' id='sBmsMac'>--</span><span class='value err' id='sBms'>未连接</span></span></div>\n"
+"<div class='sys-status-item'><span class='label'>保护板(BMS)</span><span class='value-group'><span class='value' id='sBmsMac'>--</span><span class='value err' id='sBms'>未连接</span><span class='value' id='sBmsRssi' style='display:none'> (-xxdB)</span></span></div>\n"
 "<div class='sys-status-item'><span class='label'>中继状态</span><span class='value' id='sBleSrv'>--</span></div>\n"
 "<div class='sys-status-item'><span class='label'>剩余可用内存</span><span class='value' id='sHeapFree'>--</span></div>\n"
-"<div class='sys-status-item'><span class='label'>上次重启</span><span class='value' id='sResetInfo'>--</span></div>\n"
 "</div>\n"
 "<div class='section' id='bmsDataCard'>\n"
 "<div class='section-title'><h2>BMS 实时数据</h2></div>\n"
@@ -1058,33 +1050,46 @@ const char INDEX_HTML[] PROGMEM =
 "<button class='btn btn-connect' onclick='connectBMS()' style='flex:1'>连接</button>\n"
 "<button class='btn btn-disconnect' onclick='disconnectBMS()' style='flex:1'>断开</button>\n"
 "</div>\n"
+"<div style='margin-top:10px'>\n"
+"<div class='config-label'>BMS协议模式</div>\n"
+"<select id='protocolMode' class='config-input' style='margin-top:0' onchange='onProtocolModeChange()'>\n"
+"<option value='0'>JK02_24S (24串, 偏移0)</option>\n"
+"<option value='1'>JK02_32S (偏移32, 默认)</option>\n"
+"<option value='2'>JK04 (不解析, 仅转发)</option>\n"
+"</select>\n"
+"<div style='margin-top:8px'><button class='btn btn-save' onclick='saveProtocolMode()' style='width:100%'>保存协议模式</button></div>\n"
+"</div>\n"
 "</div>\n"
 "<div style='flex:1'>\n"
 "<div class='config-label'>中继名称</div>\n"
 "<input type='text' class='config-input' id='relayName' maxlength='31' placeholder='JK-BMS-Relay'>\n"
-"<div class='config-label' style='margin-top:10px'>协议模式</div>\n"
-"<select id='protocolMode' class='config-input' style='margin-top:8px' onchange='onProtocolModeChange()'>\n"
-"<option value='0'>JK02_24S (24串, 偏移0)</option>\n"
-"<option value='1'>JK02_32S (偏移32, 默认)</option>\n"
-"<option value='2'>JK04 (不预设, 仅转发)</option>\n"
-"</select>\n"
-"<div class='config-label' style='margin-top:10px'>电芯帧偏移 (0x02 帧, 0~64 偶数)</div>\n"
-"<input type='number' class='config-input' id='cellInfoOffset' min='0' max='64' step='2' value='32'>\n"
 "<div style='margin-top:10px'>\n"
-"<button class='btn btn-save' onclick='saveRelayName()' style='width:100%'>保存中继名称与偏移</button>\n"
+"<button class='btn btn-save' onclick='saveRelayName()' style='width:100%'>保存中继名称</button>\n"
+"</div>\n"
+"<div style='margin-top:10px'>\n"
+"<div class='config-label'>手动设置电芯帧偏移</div>\n"
+"<div style='display:flex;gap:6px;margin-top:8px'>\n"
+"<input type='number' class='config-input' id='cellInfoOffset' min='0' max='64' step='2' value='32' style='flex:1;margin-top:0;min-width:0;padding:8px 12px;text-align:center'>\n"
+"<button class='btn btn-save' onclick='saveOffset()' style='flex:1;white-space:nowrap'>保存偏移</button>\n"
+"</div>\n"
+"<div style='font-size:11px;color:#999;margin-top:4px'>选协议模式自动预设偏移, 可手动微调后保存 (常用: 0,16,32,48,64)</div>\n"
 "</div>\n"
 "</div>\n"
 "</div>\n"
 "</div>\n"
 "<div class='section'>\n"
-"<div class='wifi-status'>\n"
-"<span class='wifi-status-label'>WiFi AP</span>\n"
+"<div style='display:flex;align-items:center;gap:10px;font-size:12px;color:#e0e6ed;justify-content:space-between;flex-wrap:wrap'>\n"
+"<span style='display:flex;align-items:center;gap:8px'>\n"
+"<span style='color:#8892b0'>WiFi AP</span>\n"
 "<span class='wifi-status-value' id='wifiStatus'>--</span>\n"
-"<label style='display:flex;align-items:center;gap:6px;margin-left:12px;cursor:pointer'>\n"
+"</span>\n"
+"<span style='display:flex;align-items:center;gap:10px'>\n"
+"<label style='display:flex;align-items:center;gap:6px;cursor:pointer'>\n"
 "<input type='checkbox' id='wifiAutoOffCb' style='width:14px;height:14px;accent-color:#64ffda'>\n"
-"<span style='font-size:12px;color:#8892b0'>10 分钟无操作自动关闭 WiFi</span>\n"
+"<span>10 分钟无操作自动关闭 WiFi</span>\n"
 "</label>\n"
 "<button class='btn btn-save' onclick='saveWifiAutoOff()' style='flex:0 0 auto;padding:6px 12px;font-size:12px'>保存</button>\n"
+"</span>\n"
 "</div>\n"
 "<div class='config-input-row' style='gap:12px'>\n"
 "<div>\n"
@@ -1106,12 +1111,11 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='section-title'><h2>固件升级 (OTA)</h2></div>\n"
 "<div style='display:flex;gap:6px;flex-wrap:wrap'>\n"
 "<input type='file' id='otaFile' accept='.bin' style='flex:1;min-width:200px;font-size:12px'>\n"
-"<button class='btn btn-connect' onclick='uploadOta()' style='flex:1'>升级固件</button>\n"
+"<button class='btn btn-save' onclick='uploadOta()' style='flex:1'>升级固件</button>\n"
 "</div>\n"
-"<div class='ota-progress' id='otaProgress' style='display:none;margin-top:8px;height:14px;background:#0a0e17;border-radius:6px;overflow:hidden'><div id='otaProgressBar' style='height:100%;width:0%;background:linear-gradient(90deg,#667eea,#764ba2);transition:width .2s'></div></div>\n"
-"<div id='otaStatus' style='margin-top:6px;font-size:12px;color:var(--sub)'></div>\n"
+"<div id='otaProgress' style='display:none;margin-top:8px;height:14px;background:#0a0e17;border-radius:6px;overflow:hidden'><div id='otaProgressBar' style='height:100%;width:0%;background:linear-gradient(90deg,#667eea,#764ba2);transition:width .2s'></div></div>\n"
+"<div id='otaStatus' style='margin-top:6px;font-size:12px;color:#8892b0'></div>\n"
 "<div style='margin-top:4px;font-size:11px;color:#8892b0'>上传编译产物 esp32s3-gateway.ino.bin，成功自动重启，失败自动回滚；升级期间请保持供电</div>\n"
-"</div>\n"
 "</div>\n"
 "</div>\n"
 "</div>\n"
@@ -1130,32 +1134,52 @@ const char INDEX_HTML[] PROGMEM =
 "const state={ws:null,connected:false,logs:[]};\n"
 "function $(id){return document.getElementById(id)}\n"
 "function showToast(msg,isErr){const t=$('toast');t.textContent=msg;t.className='toast'+(isErr?' error':'');requestAnimationFrame(()=>t.classList.add('show'));setTimeout(()=>t.classList.remove('show'),2000)}\n"
-"function addLog(msg){state.logs.unshift({ts:'',msg});if(state.logs.length>50)state.logs.pop()}\n"
-"function renderLogs(){}\n"
-"function clearLogs(){}\n"
+"function addLog(msg){const t=new Date();const ts=String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0')+':'+String(t.getSeconds()).padStart(2,'0');state.logs.unshift({ts,msg});if(state.logs.length>50)state.logs.pop();renderLogs()}\n"
+"function renderLogs(){const el=$('logList');if(!el)return;if(state.logs.length===0){el.innerHTML='<div class=\\'log-empty\\'>暂无日志</div>';return}el.innerHTML=state.logs.map(l=>'<div class=\\'log-item\\'><span class=\\'time\\'>['+l.ts+']</span> <span class=\\'msg\\'>'+l.msg+'</span></div>').join('')}\n"
+"function clearLogs(){state.logs=[];renderLogs()}\n"
 "function openModal(title,msg,onConfirm){$('modalTitle').textContent=title;$('modalMsg').textContent=msg;$('modalConfirm').onclick=()=>{closeModal();onConfirm&&onConfirm()};$('modal').classList.add('show')}\n"
 "function closeModal(){$('modal').classList.remove('show')}\n"
+"function updateClock(){}\n"
 "var cellsExpanded=false;function toggleCells(){cellsExpanded=!cellsExpanded;var w=$('cellVoltageWrap');var i=$('cellToggleIcon');if(cellsExpanded){w.style.maxHeight='2000px';i.style.transform='';i.innerHTML='&#9660;'}else{w.style.maxHeight='0px';i.style.transform='rotate(-90deg)';i.innerHTML='&#9654;'}}\n"
+"function fmtUptime(ms){let s=Math.floor(ms/1000);const d=Math.floor(s/86400);s%=86400;const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;if(d>0)return d+'天 '+h+'时'+m+'分';if(h>0)return h+'时'+m+'分'+s+'秒';if(m>0)return m+'分'+s+'秒';return s+'秒'}\n"
 "function setStatusEl(id,text,cls){const el=$(id);if(!el)return;el.textContent=text;el.className='value '+(cls||'')}\n"
-"function updateSysStatus(d){if(d.bmsConnected){setStatusEl('sBms','已连接('+(d.bmsRssi||0)+'dB)','ok')}else{setStatusEl('sBms','未连接','err')}setStatusEl('sBmsMac',d.bmsMac||'--','');const conn=(d.bleServerConnCount||0)>0;setStatusEl('sBleSrv',conn?('广播中('+d.bleServerConnCount+'个客户端已连接)'):'待机中',conn?'ok':'warn');const hf=d.heapFree||0;setStatusEl('sHeapFree',(hf/1024).toFixed(0)+' KB',(hf<30000)?'err':(hf<60000)?'warn':'ok');setStatusEl('sResetInfo',d.lastResetInfo||'上次重启: --','')}\n"
+"function updateSysStatus(d){const rssiEl=$('sBmsRssi');if(d.bmsConnected){setStatusEl('sBms','已连接','ok');if(rssiEl){rssiEl.style.display='inline';rssiEl.textContent=' ('+(d.bmsRssi||0)+'dB)'}}else{setStatusEl('sBms','未连接','err');if(rssiEl){rssiEl.style.display='none'}}setStatusEl('sBmsMac',d.bmsMac||'--','');const conn=(d.bleServerConnCount||0)>0;setStatusEl('sBleSrv',conn?('广播中('+d.bleServerConnCount+'个客户端已连接)'):'待机中',conn?'ok':'warn');const hf=d.heapFree||0;setStatusEl('sHeapFree',(hf/1024).toFixed(0)+' KB',(hf<30000)?'err':(hf<60000)?'warn':'ok')}\n"
 "function updateBmsData(d){if(d.valid){state.connected=true;$('totalVoltage').innerHTML=d.totalVoltage.toFixed(2)+'<span class=\\'unit\\'>V</span>';$('current').innerHTML=(d.current>=0?'+':'')+d.current.toFixed(2)+'<span class=\\'unit\\'>A</span>';$('soc').innerHTML=d.soc+'<span class=\\'unit\\'>%</span>';$('cellDelta').innerHTML=d.deltaCellVoltage.toFixed(3)+'<span class=\\'unit\\'>V</span>';const maxT=Math.max(d.mosfetTemp||0,d.temp1||0,d.temp2||0);$('maxTemp').innerHTML=maxT.toFixed(1)+'<span class=\\'unit\\'>°C</span>';$('cellCount').textContent=d.cellCount||'--';const cells=d.cellVoltages||[];let html='';for(let i=0;i<cells.length;i++){html+='<div style=\\'background:#0a0e17;border-radius:4px;padding:4px;text-align:center\\'><div style=\\'font-size:9px;color:#8892b0\\'>#'+(i+1)+'</div><div style=\\'font-size:12px;font-weight:600;color:'+(cells[i]<3.0?'#ff4757':'#fff')+'\\'>'+cells[i].toFixed(3)+'</div></div>'}$('cellVoltageList').innerHTML=html}else{state.connected=false;$('totalVoltage').innerHTML='--<span class=\\'unit\\'>V</span>';$('current').innerHTML='--<span class=\\'unit\\'>A</span>';$('soc').innerHTML='--<span class=\\'unit\\'>%</span>';$('cellDelta').innerHTML='--<span class=\\'unit\\'>V</span>';$('maxTemp').innerHTML='--<span class=\\'unit\\'>°C</span>';$('cellCount').textContent='--';$('cellVoltageList').innerHTML=''}}\n"
 "function connectWebSocket(){const p=location.protocol==='https:'?'wss:':'ws:';state.ws=new WebSocket(p+'//'+location.hostname+':81');state.ws.onopen=()=>{};state.ws.onmessage=e=>{const d=JSON.parse(e.data);if(typeof d.bmsConnected!=='undefined'){updateSysStatus(d)}else if(typeof d.diag!=='undefined'){addLog(d.diag)}else{updateBmsData(d)}};state.ws.onclose=()=>{setTimeout(connectWebSocket,5000)}}\n"
 "async function fetchData(){try{const d=await(await fetch('/api/data')).json();updateBmsData(d)}catch(e){}}\n"
 "async function fetchStatus(){try{const d=await(await fetch('/api/status')).json();updateSysStatus(d)}catch(e){}}\n"
-"async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';$('cellInfoOffset').value=(d.cellInfoOffset!=null)?d.cellInfoOffset:32;$('protocolMode').value=(d.protocolMode!=null)?d.protocolMode:1;$('wifiAutoOffCb').checked=!!d.wifiAutoOff;updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
-"async function scanBms(){const box=$('scanResult');box.innerHTML='扫描中(约3秒)...';try{const r=await fetch('/api/scan',{method:'POST'});if(!r.ok)return;for(let i=0;i<20;i++){await new Promise(res=>setTimeout(res,300));const s=await(await fetch('/api/scan/status')).json();if(!s.scanning)break}const res=await(await fetch('/api/scan/result')).json();if(!res.devices||!res.devices.length){box.innerHTML='未发现蓝牙设备';return}box.innerHTML='';res.devices.forEach(dev=>{const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;padding:7px 8px;border-bottom:1px solid #0f1626;cursor:pointer';row.onclick=()=>useBms(dev.mac,dev.name);const nm=document.createElement('span');nm.textContent=dev.name||'(无名称)';nm.style.color=dev.name?'#e6f1ff':'#8892b0';const mc=document.createElement('span');mc.style.cssText='color:#64ffda;font-family:monospace';mc.textContent=dev.mac;const rs=document.createElement('span');rs.textContent=dev.rssi+'dBm';row.appendChild(nm);row.appendChild(mc);row.appendChild(rs);box.appendChild(row)})}catch(e){box.innerHTML='扫描失败'}}\n"
-"function useBms(mac,name){$('bmsMacInput').value=mac;openModal('连接 BMS','确定连接 '+mac+(name?' ('+name+')':'')+' 吗？',async()=>{try{addLog('通过扫描选择 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'})},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
-"async function connectBMS(){const mac=$('bmsMacInput').value.trim();if(!mac){showToast('请先输入 MAC 地址',true);return}openModal('连接 BMS','确定要连接 '+mac+' 吗？\\n(将自动保存MAC)',async()=>{try{addLog('正在连接 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'});addLog('BMS 连接请求已发送')},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
-"async function disconnectBMS(){openModal('断开 BMS','确定要断开当前 BMS 连接吗？',async()=>{try{await fetch('/api/reconnect',{method:'POST'});addLog('已断开 BMS 连接')}catch(e){}})}\n"
-"async function saveRelayName(){const n=$('relayName').value.trim();const off=parseInt($('cellInfoOffset').value)||32;const m=parseInt($('protocolMode').value)||1;openModal('保存配置','保存中继名/协议模式/电芯帧偏移('+off+')后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n,cellInfoOffset:off,protocolMode:m})});const d=await r.json();if(d.success){showToast('配置已保存, 正在重启...');addLog('中继名: '+n+' 偏移: '+off+' 模式: '+m+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
-"function onProtocolModeChange(){const m=parseInt($('protocolMode').value);if(m===0){$('cellInfoOffset').value=0}else if(m===1){$('cellInfoOffset').value=32}}\n"
 "async function saveWifiAutoOff(){const v=$('wifiAutoOffCb').checked;try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wifiAutoOff:v})});const d=await r.json();if(d.success){showToast('WiFi自动关闭: '+(v?'开启(10分钟)':'关闭(常开)'));addLog('WiFi自动关闭已保存: '+(v?'开启':'关闭'))}else{showToast('保存失败',true)}}catch(e){showToast('保存失败',true)}}\n"
+"function uploadOta(){\n"
+"var f=$('otaFile').files[0];if(!f){showToast('请先选择 .bin 固件文件',true);return}\n"
+"if(f.name.indexOf('.bin')<0){showToast('请选择 .bin 文件',true);return}\n"
+"var mb=(f.size/1048576).toFixed(2);\n"
+"openModal('固件升级','将上传 '+f.name+' ('+mb+' MB)，上传完成后设备自动重启；失败自动回滚。确定？',function(){\n"
+"var xhr=new XMLHttpRequest();xhr.open('POST','/api/ota',true);\n"
+"xhr.upload.onprogress=function(e){if(e.lengthComputable){$('otaProgress').style.display='block';$('otaProgressBar').style.width=Math.round(e.loaded/e.total*100)+'%'}};\n"
+"xhr.onload=function(){try{var d=JSON.parse(xhr.responseText);$('otaStatus').textContent=d.success?('成功: '+d.message):('失败: '+d.message);if(d.success){showToast('升级成功, 设备重启中...')}else{showToast(d.message,true)}}catch(e){$('otaStatus').textContent='响应异常';showToast('升级失败',true)}};\n"
+"xhr.onerror=function(){$('otaStatus').textContent='上传失败(连接中断)';showToast('上传失败',true)};\n"
+"var fd=new FormData();fd.append('fw',f);xhr.send(fd);\n"
+"});\n"
+"}\n"
+"async function fetchConfig(){try{const d=await(await fetch('/api/config')).json();$('relayName').value=d.relayName||'';$('bmsMacInput').value=d.bmsMac||'';$('apSsidInput').value=d.apSsid||'';$('apPasswordInput').value=d.apPassword||'';$('cellInfoOffset').value=(d.cellInfoOffset!=null)?d.cellInfoOffset:32;$('protocolMode').value=(d.protocolMode!=null)?d.protocolMode:1;$('wifiAutoOffCb').checked=!!d.wifiAutoOff;updateWifiUI(d.wifiEnabled);addLog('配置已加载')}catch(e){}}\n"
+"async function connectBMS(){const mac=$('bmsMacInput').value.trim();if(!mac){showToast('请先输入 MAC 地址',true);return}openModal('连接 BMS','确定要连接 '+mac+' 吗？\\n(将自动保存MAC)',async()=>{try{addLog('正在连接 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'});addLog('BMS 连接请求已发送')},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
+"async function scanBms(){const box=$('scanResult');box.innerHTML='<div style=\"padding:10px;text-align:center;color:#64ffda\">扫描中(约3秒)...</div>';try{const r=await fetch('/api/scan',{method:'POST'});const d=await r.json();if(!d.success){box.innerHTML='<div style=\"padding:10px;text-align:center;color:#ff6b6b\">扫描失败</div>';return}for(let i=0;i<20;i++){await new Promise(res=>setTimeout(res,300));const s=await(await fetch('/api/scan/status')).json();if(!s.scanning)break}const res=await(await fetch('/api/scan/result')).json();if(!res.devices||!res.devices.length){box.innerHTML='<div style=\"padding:10px;text-align:center;color:#8892b0\">未发现蓝牙设备<br><span style=\"font-size:11px\">请确认设备在附近且已开机</span></div>';return}box.innerHTML='';const cnt=document.createElement('div');cnt.style.cssText='padding:6px 8px;color:#64ffda;font-size:11px';cnt.textContent='共 '+res.devices.length+' 个设备, 点击选择连接';box.appendChild(cnt);const hd=document.createElement('div');hd.style.cssText='display:grid;grid-template-columns:1fr 130px 60px;padding:6px 8px;color:#8892b0;font-weight:600;border-bottom:1px solid #1a2332';hd.innerHTML='<span>名称</span><span>MAC</span><span style=\"text-align:right\">信号</span>';box.appendChild(hd);res.devices.forEach(dev=>{const sn=(dev.name||'').replace(/[^A-Za-z0-9 _\\-]/g,'');const row=document.createElement('div');row.style.cssText='display:grid;grid-template-columns:1fr 130px 60px;padding:7px 8px;border-bottom:1px solid #0f1626;cursor:pointer;align-items:center';row.onmouseover=()=>{row.style.background='#0d1526'};row.onmouseout=()=>{row.style.background=''};const nm=document.createElement('span');nm.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap';nm.textContent=dev.name||'(无名称)';nm.style.color=dev.name?'#e6f1ff':'#8892b0';const mc=document.createElement('span');mc.style.cssText='color:#64ffda;font-family:monospace';mc.textContent=dev.mac;const rs=document.createElement('span');rs.style.cssText='text-align:right;color:#8892b0';rs.textContent=dev.rssi+'dBm';row.appendChild(nm);row.appendChild(mc);row.appendChild(rs);row.onclick=()=>useBms(dev.mac,sn);box.appendChild(row)});}catch(e){box.innerHTML='<div style=\"padding:10px;text-align:center;color:#ff6b6b\">扫描失败</div>'}}\n"
+"function useBms(mac,name){$('bmsMacInput').value=mac;openModal('连接 BMS','确定连接 '+mac+(name?' ('+name+')':'')+' 吗？',async()=>{try{addLog('通过扫描选择 BMS: '+mac);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:mac})});const d=await r.json();if(d.success){showToast('MAC已保存, 正在连接...');setTimeout(()=>{fetch('/api/reconnect',{method:'POST'})},500)}else{showToast('保存失败',true)}}catch(e){showToast('连接失败',true)}})}\n"
+"async function disconnectBMS(){openModal('断开 BMS','确定要断开当前 BMS 连接吗？',async()=>{try{await fetch('/api/reconnect',{method:'POST'});addLog('已断开 BMS 连接')}catch(e){}})}\n"
+"async function saveMac(){const m=$('bmsMacInput').value.trim();if(!m){showToast('MAC 不能为空',true);return}try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bmsMac:m})});const d=await r.json();if(d.success){showToast('MAC 已保存');addLog('MAC 已保存: '+m)}}catch(e){showToast('保存失败',true)}}\n"
+"async function saveRelayName(){const n=$('relayName').value.trim();if(!n){showToast('名称不能为空',true);return}openModal('保存中继名','保存后将自动重启设备使BLE广播名称生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({relayName:n})});const d=await r.json();if(d.success){showToast('中继名已保存, 正在重启...');addLog('中继名已保存: '+n+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
+"async function saveOffset(){const v=parseInt($('cellInfoOffset').value);if(isNaN(v)||v<0||v>64){showToast('偏移需在0-64之间',true);return}try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cellInfoOffset:v})});const d=await r.json();if(d.success){showToast('偏移已保存: '+v+' (立即生效)');addLog('电芯帧偏移已保存: '+v)}else{showToast('保存失败',true)}}catch(e){showToast('保存失败',true)}}\n"
+"function onProtocolModeChange(){const m=parseInt($('protocolMode').value);if(m===0){$('cellInfoOffset').value=0}else if(m===1){$('cellInfoOffset').value=32}}\n"
+"async function saveProtocolMode(){const m=parseInt($('protocolMode').value);try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({protocolMode:m})});const d=await r.json();if(d.success){showToast('协议模式已保存: '+m+' (偏移='+($('cellInfoOffset').value)+')');addLog('协议模式已保存: '+m)}else{showToast('保存失败',true)}}catch(e){showToast('保存失败',true)}}\n"
 "function updateWifiUI(enabled){const s=$('wifiStatus');if(enabled){s.textContent='已开启';s.className='wifi-status-value wifi-on';$('wifiOffBtn').style.display='flex';$('wifiOnBtn').style.display='none'}else{s.textContent='已关闭';s.className='wifi-status-value wifi-off';$('wifiOffBtn').style.display='none';$('wifiOnBtn').style.display='flex'}}\n"
 "async function saveApConfig(){const s=$('apSsidInput').value.trim();const p=$('apPasswordInput').value.trim();if(!s){showToast('AP名称不能为空',true);return}if(p.length>0&&p.length<8){showToast('密码至少8位',true);return}openModal('保存AP配置','保存后将自动重启设备生效,确定？',async()=>{try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apSsid:s,apPassword:p})});const d=await r.json();if(d.success){showToast('AP配置已保存, 正在重启...');addLog('AP配置已保存: SSID='+s+'，正在重启...');setTimeout(()=>{fetch('/api/reboot',{method:'POST'})},1500)}}catch(e){showToast('保存失败',true)}})}\n"
 "async function turnOffWifi(){openModal('关闭WiFi','关闭后仅BLE运行,节省资源,确定？',async()=>{try{await fetch('/api/wifi/off',{method:'POST'});addLog('WiFi已关闭 (BLE继续运行)');updateWifiUI(false);showToast('WiFi已关闭')}catch(e){showToast('操作失败',true)}})}\n"
-"function uploadOta(){const f=$('otaFile').files[0];if(!f){showToast('请先选择 .bin 固件文件',true);return}if(!f.name.toLowerCase().endsWith('.bin')){showToast('请选择 .bin 文件',true);return}openModal('固件升级','将上传 '+f.name+' ('+(f.size/1024/1024).toFixed(2)+' MB)，上传完成后设备自动重启；失败自动回滚。确定？',()=>{const xhr=new XMLHttpRequest();xhr.open('POST','/api/ota',true);xhr.upload.onprogress=e=>{if(e.lengthComputable){$('otaProgress').style.display='block';$('otaProgressBar').style.width=Math.round(e.loaded/e.total*100)+'%'}};xhr.onload=()=>{try{const d=JSON.parse(xhr.responseText);$('otaStatus').textContent=d.success?('✅ '+d.message):('❌ '+d.message);if(d.success){showToast('升级成功, 设备重启中...')}else{showToast(d.message,true)}}catch(e){$('otaStatus').textContent='❌ 响应异常';showToast('升级失败',true)}};xhr.onerror=()=>{$('otaStatus').textContent='❌ 上传失败(连接中断)';showToast('上传失败',true)};const fd=new FormData();fd.append('fw',f);xhr.send(fd)};)}\n"
 "async function turnOnWifi(){openModal('开启WiFi','正在开启WiFi,设备将短暂重启网络服务,确定？',async()=>{try{await fetch('/api/wifi/on',{method:'POST'});addLog('WiFi已开启');updateWifiUI(true);showToast('WiFi已开启')}catch(e){showToast('操作失败',true)}})}\n"
-"async function init(){fetchConfig();fetchData();fetchStatus();connectWebSocket();addLog('系统启动完成');addLog('访问地址: http://'+window.location.hostname);setInterval(fetchData,3000);setInterval(fetchStatus,2000)}\n"
+"function refreshAll(){fetchData();fetchStatus();fetchConfig();showToast('已刷新')}\n"
+"function goBack(){if(window.history.length>1)window.history.back()}\n"
+"function toggleMenu(){const bmsIP=window.location.hostname;openModal('菜单','IP: '+bmsIP+'\\n\\n• 刷新数据\\n• 重启设备\\n• 关闭 WiFi\\n\\n确定重启设备？',()=>{fetch('/api/reboot',{method:'POST'})})}\n"
+"function toggleFullscreen(){if(!document.fullscreenElement){document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen()}else{document.exitFullscreen&&document.exitFullscreen()}}\n"
+"async function init(){fetchConfig();fetchData();fetchStatus();connectWebSocket();setInterval(fetchData,3000);setInterval(fetchStatus,2000)}\n"
 "init();\n"
 "</script>\n"
 "</body>\n"
@@ -1816,16 +1840,11 @@ bool connectToBms() {
   bmsConnected = true;
   frameBuffer.clear();
 
-  // v9.41: BMS 连接成功 → 立即恢复广播 (客户端可连接取数)。
-  //   安全: 此处 loop 上下文 (connectToBms 由 loop 调用), 非 NimBLE 事件回调,
-  //   不受 FIX-23/v9.6 "回调内不操作广播" 限制; 广播健康检查也会兜底拉起。
-  if (pBleServer) {
-    NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
-    if (!pAdv->isAdvertising()) {
-      pAdv->start();
-      Serial.println("[BLE-Server] BMS 已连接, 广播启动");
-    }
-  }
+  // v9.56 修复 (ble_svc_gap_init 断言崩溃): 移除连接成功处的立即广播启动。
+  //   实测: connect() 返回成功时 NimBLE host_task 仍在本机处理 BMS 连接完成事件,
+  //   此刻立即 pAdv->start() 与 host 内部 GATT 状态竞争 → host 重置 → GAP 重复初始化
+  //   → assert failed: ble_svc_gap_init (ble_svc_gap.c:370 rc==0) 崩溃。
+  //   广播改由 loop 广播健康检查兜底 (BMS 连上后 ≤5s 自动拉起, 无竞争)。
 
   // 获取初始 RSSI
   g_bmsData.rssi = pClient->getRssi();
@@ -2416,6 +2435,8 @@ void initWebServer() {
   httpServer.on("/api/scan", HTTP_POST, handleScan);
   httpServer.on("/api/scan/status", HTTP_GET, handleScanStatus);
   httpServer.on("/api/scan/result", HTTP_GET, handleScanResult);
+  // OTA 固件升级 (v2.14: Web 网页上传 .bin; on 第 4 参为上传回调)
+  httpServer.on("/api/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
 
   // CORS 预检
   httpServer.on("/api/data", HTTP_OPTIONS, handleOptions);
