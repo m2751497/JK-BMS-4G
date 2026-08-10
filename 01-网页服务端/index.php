@@ -301,6 +301,9 @@ function switchTab(name, btn){
   btn.classList.add('active');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   $(name+'-page').classList.add('active');
+  // v2.19: 记录当前页并立即通知服务端 —— 只有切到 BMS 页才 high频 realtime, 其他页回 track 省流
+  window.currentPage = name;
+  heartbeat();
   // 轨迹页：若地图已创建则重算尺寸，否则延迟到布局完成后自动加载
   if (name === 'track'){
     if (replayMap) replayMap.resize();
@@ -346,7 +349,7 @@ function showExpired(){
   $('bleState').style.color = 'var(--red)';
 }
 
-function heartbeat(){ fetch(API+'?action=heartbeat&uid='+uid, {cache:'no-store'}); }
+function heartbeat(){ fetch(API+'?action=heartbeat&uid='+uid+'&page='+(window.currentPage||'gps'), {cache:'no-store'}); }
 
 // ==================== 状态栏 ====================
 let g_bleConnected = false; // 全局蓝牙连接状态 (BMS 数据有效性判断)

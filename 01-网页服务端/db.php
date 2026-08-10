@@ -195,14 +195,19 @@ function writeClients(array $data): void
     writeJsonFile((require __DIR__ . '/config.php')['clientsFile'], $data);
 }
 
-/** 记录一次网页心跳 */
-function touchClient(string $uid): void
+/** 记录一次网页心跳（v2.19: 带当前页面 page，用于"仅 BMS 页在线才 realtime"） */
+function touchClient(string $uid, string $page = 'gps'): void
 {
     $clients = readClients();
-    $clients[$uid] = time() * 1000;
+    // 兼容旧格式：旧数据是纯时间戳数字 → 转新结构
+    if (!is_array($clients[$uid] ?? null)) {
+        $clients[$uid] = ['t' => $clients[$uid] ?? 0, 'page' => 'gps'];
+    }
+    $clients[$uid]['t'] = time() * 1000;
+    $clients[$uid]['page'] = in_array($page, ['gps', 'bms', 'track', 'settings'], true) ? $page : 'gps';
     // 防止 uid 被刷爆：最多保留 50 条，超限按时间倒序剔除最旧的
     if (count($clients) > 50) {
-        arsort($clients);
+        uasort($clients, fn($a, $b) => (is_array($b) ? $b['t'] : $b) <=> (is_array($a) ? $a['t'] : $a));
         $clients = array_slice($clients, 0, 50, true);
     }
     writeClients($clients);

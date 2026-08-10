@@ -335,8 +335,16 @@ function checkAndSendMode(): void
     $now = time() * 1000;
     $timeout = $cfg['onlineTimeout'] * 1000;
     $online = 0;
-    foreach ($clients as $uid => $lastActive) {
-        if ($now - $lastActive < $timeout) $online++;
+    // v2.19: 只有"停留在 BMS 页"的在线客户端才触发 realtime 高频;
+    //   停留在其他页(或全部离线)按 track —— BMS 充/放电 30s、停放停报; GPS 静止省流。
+    $bmsPageOnline = 0;
+    foreach ($clients as $uid => $c) {
+        $last = is_array($c) ? (int)($c['t'] ?? 0) : (int)$c;
+        $page = is_array($c) ? (string)($c['page'] ?? 'gps') : 'gps';
+        if ($now - $last < $timeout) {
+            $online++;
+            if ($page === 'bms') $bmsPageOnline++;
+        }
     }
 
     // 持久化状态（跨请求共享）
@@ -345,7 +353,7 @@ function checkAndSendMode(): void
 
     // 下发模式指令（带 BMS/GPS 间隔参数，ms）
     $sendModeCmd = function ($mode) use ($cfg, $settings) {
-        // v2.8: track 模式固件停报 BMS, bmsMs 传 0 (固件不设置 BMS 间隔)
+        // v2.8/v2.19: track 模式 bmsMs 传 0 —— 固件按电流判断: 充/放电(|I|>=0.3A) 30s 上报(续航学习), 停放停报
         $bmsMs = (int)(($mode === 'realtime' ? $settings['realtimeBmsSec'] : 0) * 1000);
         $gpsMs = (int)(($mode === 'realtime' ? $settings['realtimeGpsSec'] : 0) * 1000);
         sendModeCommand("mode,{$mode},{$bmsMs},{$gpsMs}");
@@ -359,16 +367,17 @@ function checkAndSendMode(): void
     }
 
     // 状态变化 → 切换模式（只在变化时下发一次，避免每次心跳重复发）
-    if ($online > 0 && $currentMode !== 'realtime') {
+    // v2.19: 触发 realtime 的条件 = 有客户端停留在 BMS 页（不只是"网页在线"）
+    if ($bmsPageOnline > 0 && $currentMode !== 'realtime') {
         $currentMode = 'realtime';
         setAppSetting('currentMode', 'realtime');
         $sendModeCmd('realtime');
-        ingestLog("网页在线({$online}个) → realtime");
-    } elseif ($online === 0 && $currentMode !== 'track') {
+        ingestLog("BMS 页在线({$bmsPageOnline}个) → realtime");
+    } elseif ($bmsPageOnline === 0 && $currentMode !== 'track') {
         $currentMode = 'track';
         setAppSetting('currentMode', 'track');
         $sendModeCmd('track');
-        ingestLog("网页离线 → track");
+        ingestLog("无 BMS 页在线 → track");
     }
 
     // ★ 自愈 (v2.4, 间隔可配置): 周期强制下行 —— 每 modePingInterval 秒重新下发当前 mode 指令,

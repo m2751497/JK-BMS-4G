@@ -162,7 +162,8 @@ switch ($action) {
     case 'heartbeat': {
         $uid = $_GET['uid'] ?? 'web_' . md5($_SERVER['REMOTE_ADDR']);
         if (strlen($uid) > 64) $uid = substr($uid, 0, 64);
-        touchClient($uid);
+        $page = $_GET['page'] ?? 'gps';
+        touchClient($uid, $page);
         checkAndSendMode(); // 在线检测 + 双模式下发（无常驻进程方案）
         echo json_encode(['ok' => true, 'ts' => time() * 1000]);
         break;

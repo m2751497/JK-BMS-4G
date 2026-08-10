@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.18）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.19）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -17,7 +17,9 @@
  *   5. 4G/GPS 串口: UART1 (TX=13, RX=12) 接银尔达 M100PG-DTU, 支持指令 chaxun / getcsq /
  *      getgps / getblestatus, GPS 查询指令 config,get,gpsext, 输出 gps:fix,lonDir,lon,latDir,lat,speed
  *   6. 双模式定时上报 (核心新增): 解析 UART1 下发的 mode,realtime/track,<bms_ms>,<gps_ms> 指令,
- *      track 默认 GPS 30s (v2.6); 静止省流 (v2.7, 全部模式生效): 速度≥3km/h 且位移≥30m
+ *      track 默认 GPS 30s (v2.6); 静止省流 (v2.7, 全部模式生效): 速度≥3km/h 且位移≥30m;
+ *      BMS 按电流 (v2.19): 网页开 realtime 2s 高频; 网页关 track 时充/放电(|I|>=0.3A) 30s 上报
+ *      (续航学习数据), 停放停报零流量
  *      才算运动(双条件防 GPS 漂移误判), 静止≥60s 停发 GPS, 移动自动 2s 实时上报;
  *      BMS 双重判断(v2.12): 网页开→一律 2s 实时(充/放电/停放); 网页关→一律 30s;
  *      GPS 只看移动/静止(v2.11, 网页开关无关): 移动 2s 实时 / 静止≥60s 停发, 30s 本地探测;
@@ -1007,7 +1009,7 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='app'>\n"
 "<div class='header'>\n"
 "<div class='header-top'>\n"
-"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.18</sub></span>\n"
+"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.19</sub></span>\n"
 "</div>\n"
 "</div>\n"
 "<div class='content' id='content'>\n"
@@ -2134,6 +2136,9 @@ void handleModeCommand(const String& clean) {
   if (mode != "realtime") mode = "track";
   g_reportMode = mode;
 
+  // v2.19: bmsMs==0 = 停报 BMS (服务端 v2.8 网页关 track 时传 0)。
+  //   原实现把 0 当"保留旧间隔"→ track 下 BMS 仍 30s 上报, 车停着也白耗流量/动作。
+  //   realtime 网页开: 服务端传真实间隔(如 2000), 照常高频。
   if (bmsMs > 0) {
     g_bmsIntervalMs = bmsMs;
     if (mode == "realtime") g_realtimeBmsMs = bmsMs; else g_trackBmsMs = bmsMs;
@@ -2315,7 +2320,13 @@ void handleTimedReports() {
   } else {
     // 网页开(realtime): 一律 2s 实时(充/放电/停放); 网页关(track): 一律 30s (v2.12)
     unsigned long bmsMs = g_reportMode.equals("realtime") ? g_realtimeBmsMs : g_trackBmsMs;
-    if (now - g_lastBmsReport >= bmsMs) {
+    // v2.19: 网页关(track)按电流 —— 充/放电(|I|>=0.3A)按间隔上报(续航学习), 停放停报;
+    //   网页开(realtime)无论电流一律按间隔高频上报(网页实时看数据)
+    bool bmsShouldReport = true;
+    if (!g_reportMode.equals("realtime") && fabs(g_bmsData.current) < G_CURRENT_THRESHOLD_A) {
+      bmsShouldReport = false;   // 停放: 停报 BMS, 零流量
+    }
+    if (bmsShouldReport && now - g_lastBmsReport >= bmsMs) {
       g_lastBmsReport = now;
       // 距上次收帧超过 1 秒才发请求, 避免与 App/中继转发命令交错导致帧错乱
       if (millis() - lastDataTime > 1000) {
