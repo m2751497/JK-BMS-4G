@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.20）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.21）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -351,6 +351,7 @@ void sendCommand(uint8_t cmd) {
 // ==================== 数据解析 ====================
 
 void parseCellInfo(const uint8_t* data, size_t len) {
+  if (len < 190) return;  // ★v9.34: 防御 (最小电芯帧长度, 防止未来误用小 buffer 越界读)
   // ★v2.16: 固定 off=32 —— 实测依据 (用户 JK-BD6A24S12PD, 24S, PowerShell 抓包 100+ 帧 CRC 验证):
   //   cmd=0x02 电芯帧 24 节电压 2B/节从帧内第 32 字节开始, 总压 get32(150)=118+32、SOC/容量自洽
   //   (总压 79.9V/SOC 78%/容量 70Ah)。早期 v2.9 曾用 cellsEnabled>24?32:0 动态判断,
@@ -398,8 +399,10 @@ void parseCellInfo(const uint8_t* data, size_t len) {
   g_bmsData.valid = true;
   g_bmsData.lastUpdate = millis();
 
-  // 更新 RSSI (如果已连接)
-  if (pClient && bmsConnected) {
+  // 更新 RSSI (如果已连接) —— v9.33: 限流 5s (notifyCB 事件上下文, 高频 NimBLE 查询有对象失效风险)
+  static unsigned long lastRssiUpd = 0;
+  if (pClient && bmsConnected && millis() - lastRssiUpd > 5000) {
+    lastRssiUpd = millis();
     g_bmsData.rssi = pClient->getRssi();
   }
 
@@ -476,6 +479,7 @@ String buildBMSJson() {
   }
 
   String output;
+  output.reserve(800);  // v9.33: 消除每帧 JSON 构建的堆重分配 (长期运行防碎片)
   serializeJson(doc, output);
   return output;
 }
@@ -1009,7 +1013,7 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='app'>\n"
 "<div class='header'>\n"
 "<div class='header-top'>\n"
-"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.20</sub></span>\n"
+"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.21</sub></span>\n"
 "</div>\n"
 "</div>\n"
 "<div class='content' id='content'>\n"
@@ -2066,11 +2070,11 @@ void notifyCB(NimBLERemoteCharacteristic* pChar,
     lastGoodDiag = millis();
     Serial.printf("[DIAG] 帧通过: cmd=0x%02X len=%d 客户端=%d 订阅=%d\n",
       frame[4], (int)frameLen,
-      pBleServer ? pBleServer->getConnectedCount() : -1, g_subscribedConnCount);
+      g_bleClientCount, g_subscribedConnCount);  // v9.34: 自维护计数 (notifyCB 回调内不查 NimBLE API)
   }
   forwardFrameToClients(frame, frameLen);
 
-  pushBMSData();
+  // v9.34: 不在此重复 pushBMSData —— parseCellInfo(0x02) 内已推, 每帧推 2 次冗余
 
   // ★FIX-8 (完整版): 处理完完整帧后, 保留已提前收到的下一帧头部字节 (BMS 大块通知可能一次带过帧边界),
   //             否则下一帧要从帧头重新收, 会偶发丢帧
