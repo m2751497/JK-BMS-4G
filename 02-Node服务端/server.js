@@ -183,7 +183,7 @@ setInterval(() => db.cleanupOldData(config.settings.dataRetentionDays ?? 60), 36
 server.listen(config.port, config.host, () => {
     console.log(`[HTTP] ✅ 服务已启动: http://${config.host}:${config.port}`);
     console.log(`[MQTT] 连接 ${config.mqtt.host}:${config.mqtt.port} 主题 ${config.mqtt.topic}/${config.mqtt.controlTopic}`);
-    console.log(`[提示] 网页: http://127.0.0.1:${config.port}/  浅色版: /dashboard.html`);
+    console.log(`[提示] 网页: http://127.0.0.1:${config.port}/  `);
 });
 
 mqttClient.connect(config.mqtt, handleUplink, (up) => {

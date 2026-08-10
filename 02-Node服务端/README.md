@@ -15,7 +15,7 @@ Node.js 常驻进程 (PM2 守护)
 - **下行 mode**：网页开/关 + 停在 BMS 页自动切换 realtime/track 上报频率（`mode,realtime/track,<bms_ms>,<gps_ms>` 发到 R 主题）
 - **业务**：里程随充随学、容量校准学习、告警（过压/欠压/压差/温度/SOC，5 分钟去重）、充电循环统计、轨迹（按天/行程/回放，WGS84→GCJ02）
 - **鉴权**：登录（scrypt + session cookie 7 天 + IP 5 次/5 分钟锁定），网页/API 全站保护
-- **两种网页**：`/`（深色，原 index.php 风格）/ `/dashboard.html`（浅色卡片）
+- **网页**：`/`（深色，原 index.php 风格，默认停在 BMS 页实时数据）
 - **数据保留**：bms/gps 数据每日自动清理（默认 60 天）
 
 ## 部署（Linux VPS / 云服务器）
