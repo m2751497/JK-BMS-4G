@@ -24,7 +24,7 @@
     "lockSeconds": 300
   },
   "settings": {
-    "onlineTimeout": 25,
+    "onlineTimeout": 40,
     "realtimeBmsSec": 6,
     "realtimeGpsSec": 2,
     "trackGpsSec": 30,

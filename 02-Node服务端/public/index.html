@@ -65,15 +65,15 @@ loadAmap();
 <body>
 
 <div id="tabs">
-  <button class="tab active" onclick="switchTab('gps',this)">📡 GPS</button>
-  <button class="tab" onclick="switchTab('bms',this)">🔋 BMS</button>
+  <button class="tab" onclick="switchTab('gps',this)">📡 GPS</button>
+  <button class="tab active" onclick="switchTab('bms',this)">🔋 BMS</button>
   <button class="tab" onclick="switchTab('track',this)">🚗 轨迹</button>
   <button class="tab" onclick="switchTab('settings',this)">⚙️ 设置</button>
   <a href="/api/logout" class="tab" style="flex:0 0 64px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:13px" title="退出登录">退出</a>
 </div>
 
 <!-- GPS 页 -->
-<div class="page active" id="gps-page">
+<div class="page" id="gps-page">
   <div class="info-card">
     <div class="info-title">
       状态:
@@ -98,7 +98,7 @@ loadAmap();
 </div>
 
 <!-- BMS 页 -->
-<div class="page" id="bms-page">
+<div class="page active" id="bms-page">
   <div class="bms-grid">
     <div class="panel">
       <div class="panel-header">
@@ -305,6 +305,8 @@ loadAmap();
 // ==================== 状态 ====================
 const uid = 'web_' + Math.random().toString(16).slice(2);
 const API = '/api';
+// v2.22: 默认停在 BMS 页 —— 打开即实时上报, 不再需要手动切页才有数据
+window.currentPage = 'bms';
 let todayDistance = 0;
 let pollTimer = null;
 
