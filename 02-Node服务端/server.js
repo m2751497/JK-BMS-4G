@@ -47,7 +47,9 @@ function onlineCount() { return online.size; }
 function onlineNow() {
     const cutoff = Date.now() / 1000 - config.settings.onlineTimeout;
     for (const [uid, v] of online) if (v.lastSeen < cutoff) online.delete(uid);
-    return online.size;
+    if (online.size > 0) return online.size;
+    // 设备在线: 最近有任意上行数据 (bms/gps/blestatus 等均更新 lastAnyTs)
+    return (db.cache.lastAnyTs && db.cache.lastAnyTs / 1000 >= cutoff) ? 1 : 0;
 }
 
 /* ==================== 上行处理 (MQTT 消息 → 解析 → 入库 → 业务) ==================== */
@@ -128,14 +130,22 @@ function sendMode(mode) {
     else console.log(`[mode] ⚠ 下发失败(${mode}), MQTT 未连接 (静默)`);
     return ok;
 }
-/* 网页 heartbeat/页面切换 → 决定模式: 在线且停在 bms 页 → realtime, 否则 track */
-function refreshMode() {
+let lastModeSent = '';      // 上次已下发的模式 (去重)
+let lastModeSentAt = 0;     // 上次下发时间 (30s 自愈周期)
+/* 网页 heartbeat/页面切换 → 决定模式: 在线且停在 bms 页 → realtime, 否则 track
+ * 去重: 模式未变化且 30s 内刚发过 → 跳过 (避免 blestatus 每 15s 触发重复下发) */
+function refreshMode(force) {
     const n = onlineNow();
     const page = db.getPage();
-    if (n > 0 && page === 'bms') sendMode('realtime');
-    else if (n > 0) sendMode('track');
-    else sendMode('track');
-    return { online: n, page, mode: (n > 0 && page === 'bms') ? 'realtime' : 'track' };
+    const mode = (n > 0 && page === 'bms') ? 'realtime' : 'track';
+    const now = Date.now();
+    if (!force && mode === lastModeSent && now - lastModeSentAt < 30000) {
+        return { online: n, page, mode, sent: false };
+    }
+    sendMode(mode);
+    lastModeSent = mode;
+    lastModeSentAt = now;
+    return { online: n, page, mode, sent: true };
 }
 
 /* ==================== WebSocket 广播 ==================== */
