@@ -262,8 +262,12 @@ function mqttPublishDirect(string $host, int $port, string $user, string $pass, 
 
     $clientId = 'jk_srv_' . substr(md5(uniqid('', true)), 0, 8);
 
-    // CONNECT: 协议名 MQTT / 级别 4 / 标志 0xC0(clean session + username + password) / keepalive 60s
-    $varHeader = "\x00\x04MQTT" . "\x04" . chr(0xC0) . pack('n', 60);
+    // CONNECT: 协议名 MQTT / 级别 4 / 标志 0xC2 = clean session=true + username + password;
+    //   ★ 必须 clean session=true: 0xC0(false) 会创建持久会话, 断开后 EMQX 侧保留会话
+    //   (Serverless 默认约 2 小时) 且保留期间持续计入连接分钟 → 短连接频繁下发会堆积会话,
+    //   2 天吃掉 45 万连接分钟(平均 157 并发)。clean=true 断开立即注销, 不再堆积。
+    //   keepalive 60s (发布后立即 DISCONNECT, 不影响)
+    $varHeader = "\x00\x04MQTT" . "\x04" . chr(0xC2) . pack('n', 60);
     $payloadC  = pack('n', strlen($clientId)) . $clientId
                . pack('n', strlen($user)) . $user
                . pack('n', strlen($pass)) . $pass;
@@ -273,8 +277,9 @@ function mqttPublishDirect(string $host, int $port, string $user, string $pass, 
 
     // CONNACK: 4 字节, 返回码在第 4 字节 (0=成功)
     $ack = fread($fp, 4);
-    if (strlen($ack) < 4 || $ack[0] !== "\x20") return [false, 'CONNACK 异常: ' . bin2hex($ack)];
+    if (strlen($ack) < 4 || $ack[0] !== "\x20") { fclose($fp); return [false, 'CONNACK 异常: ' . bin2hex($ack)]; }
     if (ord($ack[3]) !== 0) {
+        fclose($fp);
         return [false, '连接被拒, 返回码=' . ord($ack[3]) . ' (1=协议错 2=标识被拒 3=服务器不可用 4=账号密码错 5=未授权)'];
     }
 
@@ -366,11 +371,12 @@ function checkAndSendMode(): void
         ingestLog("网页离线 → track");
     }
 
-    // ★ 自愈 (v2.4): 周期强制下行 —— 每 30 秒重新下发当前 mode 指令,
-    //   让 ESP32 感知 MQTT 下行链路存活; 若 MQTT 静默断开, ESP32 12 分钟
-    //   收不到下行 → 自动重启 (设备断电重启自愈, 无需人工)
+    // ★ 自愈 (v2.4, 间隔可配置): 周期强制下行 —— 每 modePingInterval 秒重新下发当前 mode 指令,
+    //   让 ESP32 感知 MQTT 下行链路存活; 若 MQTT 静默断开, ESP32 12 分钟收不到下行 → 自动重启。
+    //   v2.18: 间隔 30s→120s (config.modePingInterval), 减少短连接次数 (每次至少计费 1 连接分钟)。
     $lastPing = (int)getAppSetting('lastModePing', '0');
-    if (time() - $lastPing >= 30) {
+    $pingInterval = (int)($cfg['modePingInterval'] ?? 120);
+    if ($pingInterval > 0 && time() - $lastPing >= $pingInterval) {
         setAppSetting('lastModePing', (string)time());
         $sendModeCmd($currentMode);
     }
