@@ -1,14 +1,14 @@
 ========================================
- ESP32-S3 4G 网关固件 v2.17 烧录说明
+ ESP32-S3 4G 网关固件 v2.18 烧录说明
 ========================================
 
 【你的板子: ESP32-S3 Super Mini 4MB Flash + 2MB QSPI PSRAM】
 → 选 QSPI 版(PSRAM 生效, 推荐)
 
 一、三个 PSRAM 版本(编译参数不同, 功能完全一样)
-  1. esp32s3-gateway-v2.17-QSPI-4MB-OTA.merged.bin   ← PSRAM=QSPI (你的板子用这个)
-  2. esp32s3-gateway-v2.17-OPI-4MB-OTA.merged.bin     ← PSRAM=OPI
-  3. esp32s3-gateway-v2.17-NOPSRAM-4MB-OTA.merged.bin ← PSRAM=Disabled (无 PSRAM 板子)
+  1. esp32s3-gateway-v2.18-QSPI-4MB-OTA.merged.bin   ← PSRAM=QSPI (你的板子用这个)
+  2. esp32s3-gateway-v2.18-OPI-4MB-OTA.merged.bin     ← PSRAM=OPI
+  3. esp32s3-gateway-v2.18-NOPSRAM-4MB-OTA.merged.bin ← PSRAM=Disabled (无 PSRAM 板子)
 
 二、首次烧录
   - 文件: 对应版本的 *.merged.bin (4MB 全量, 含分区表)
@@ -19,8 +19,8 @@
   - 连 ESP32 Web 后台 (192.168.4.1) → 固件升级 → 上传对应版本的 *-OTA.bin
   - 成功自动重启, 失败自动回滚
 
-四、v2.17 更新点
-  - Web 后台全面修复 (按键/状态/扫描全有效, 版本号 v2.17)
+四、v2.18 更新点
+  - Web 后台全面修复 (按键/状态/扫描全有效, 版本号 v2.18)
   - OTA 卡片移到页面底部, 移除"最近日志"
   - 修复 ble_svc_gap_init 断言崩溃 (BMS 连接成功不再立即操作广播, 改 loop 兜底)
   - 后台 = 中继完整版 v9.55 布局 (协议模式/偏移/WiFi自动关闭可配置) + 4G/GPS/OTA
