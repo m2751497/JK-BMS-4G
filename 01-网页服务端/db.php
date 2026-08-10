@@ -102,6 +102,32 @@ function initDB(PDO $pdo): void
             learnedFactor REAL,
             oldFactor REAL,
             newFactor REAL
+        );" .
+        // ★融合 (参考 Node 版): 告警表 + 充电循环表 + 容量校准学习表 (SQLite exec 多条用分号分隔)
+        "CREATE TABLE IF NOT EXISTS alarms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL
+        );" .
+        "CREATE TABLE IF NOT EXISTS charge_cycles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            startTime INTEGER NOT NULL,
+            endTime INTEGER,
+            startSOC INTEGER,
+            endSOC INTEGER,
+            startCap REAL,
+            endCap REAL,
+            chargedAh REAL
+        );" .
+        "CREATE TABLE IF NOT EXISTS capacity_learning (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            startTs INTEGER,
+            endTs INTEGER,
+            capUsed REAL,
+            oldCap REAL,
+            newCap REAL
         )"
     );
 

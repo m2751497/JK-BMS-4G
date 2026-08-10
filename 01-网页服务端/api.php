@@ -492,6 +492,58 @@ switch ($action) {
         break;
     }
 
+    // ★融合参考 Node 版: 告警列表
+    case 'alarms': {
+        $hours = min(max(intval($_GET['hours'] ?? 24), 1), 720);
+        $level = $_GET['level'] ?? null;
+        $q = 'SELECT * FROM alarms WHERE ts >= ?';
+        $p = [time() * 1000 - $hours * 3600 * 1000];
+        if ($level) { $q .= ' AND level = ?'; $p[] = $level; }
+        $q .= ' ORDER BY id DESC LIMIT 100';
+        $st = db()->prepare($q);
+        $st->execute($p);
+        echo json_encode(['data' => $st->fetchAll(PDO::FETCH_ASSOC)], JSON_UNESCAPED_UNICODE);
+        break;
+    }
+
+    // ★融合参考 Node 版: 充电循环列表
+    case 'chargecycles': {
+        $days = min(max(intval($_GET['days'] ?? 30), 1), 365);
+        $st = db()->prepare('SELECT * FROM charge_cycles WHERE startTime >= ? ORDER BY id DESC');
+        $st->execute([time() * 1000 - $days * 86400 * 1000]);
+        echo json_encode(['data' => $st->fetchAll(PDO::FETCH_ASSOC)], JSON_UNESCAPED_UNICODE);
+        break;
+    }
+
+    // ★融合参考 Node 版: 容量校准状态/记录 + 开关
+    case 'capacity': {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            checkSameOrigin();
+            $body = json_decode(file_get_contents('php://input'), true) ?: [];
+            if (isset($body['enabled'])) {
+                setAppSetting('capLearningEnabled', !empty($body['enabled']) ? 'true' : 'false');
+                echo json_encode(['ok' => true, 'enabled' => !empty($body['enabled'])]);
+                break;
+            }
+            if (isset($body['reset'])) {
+                setAppSetting('calibratedCapacity', '');
+                echo json_encode(['ok' => true]);
+                break;
+            }
+            http_response_code(400);
+            echo json_encode(['error' => '未知操作']);
+            break;
+        }
+        $st = db()->prepare('SELECT * FROM capacity_learning ORDER BY id DESC LIMIT 20');
+        $st->execute();
+        echo json_encode([
+            'calibratedCapacity' => (float)getAppSetting('calibratedCapacity', '0'),
+            'enabled'  => getAppSetting('capLearningEnabled', 'true') === 'true',
+            'records'  => $st->fetchAll(PDO::FETCH_ASSOC),
+        ], JSON_UNESCAPED_UNICODE);
+        break;
+    }
+
     default:
         http_response_code(404);
         echo json_encode(['error' => 'not found']);

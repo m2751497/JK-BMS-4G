@@ -180,3 +180,62 @@ function wgs84ToGcj02(float $wgsLat, float $wgsLng): array
 
     return [round($wgsLat + $dLat, 6), round($wgsLng + $dLng, 6)];
 }
+
+/**
+ * ==================== 容量校准学习 (★融合参考 Node 版) ====================
+ * 满充(SOC≥99%+充电中)开始追踪 → 放电 → 再次充电开始时结算消耗 Ah,
+ * 加权更新校准总容量 (旧70% + 新30%), 存 app_settings 'calibratedCapacity'。
+ * 电流符号: 充电 = 正 (current > 0.1), 放电 = 负。
+ * 开关: config.php capacityLearning.enabled / app_settings 'capLearningEnabled' 可在线关。
+ */
+function updateCapacityLearning(array $data): void
+{
+    $cfg = (require __DIR__ . '/config.php')['capacityLearning'] ?? [];
+    if (empty($cfg['enabled'])) return;
+    if (getAppSetting('capLearningEnabled', 'true') !== 'true') return;
+
+    $current = (float)($data['current'] ?? 0);
+    $isCharging  = $current > 0.1;
+    $isDischarge = $current < -0.1;
+    $soc      = (int)($data['soc'] ?? 0);
+    $capRemain = (float)($data['capRemain'] ?? 0);
+    $now      = time() * 1000;
+
+    $phase     = getAppSetting('capPhase', 'idle');
+    $startTs   = (int)getAppSetting('capStartTs', '0');
+    $startCap  = (float)getAppSetting('capStartCap', '0');
+    $wasDischg = getAppSetting('capWasDischarging', 'false') === 'true';
+
+    if ($phase === 'idle') {
+        // 等待满充: SOC>=99 且充电中
+        if ($soc >= 99 && $isCharging) {
+            setAppSetting('capPhase', 'tracking');
+            setAppSetting('capStartTs', (string)$now);
+            setAppSetting('capStartCap', (string)$capRemain);
+            setAppSetting('capWasDischarging', 'false');
+            ingestLog("[容量校准] 检测到满充, 开始追踪放电周期 (SOC={$soc}%, cap={$capRemain}Ah)");
+        }
+    } else { // tracking
+        if ($isCharging && $wasDischg) {
+            // 放电周期结束 → 再次充电: 结算
+            $capUsed = $startCap - $capRemain;   // 消耗容量
+            $minAh = (float)($cfg['minAh'] ?? 5);
+            if ($capUsed >= $minAh) {
+                $oldCap = (float)getAppSetting('calibratedCapacity', $startCap > 0 ? (string)$startCap : '0');
+                if ($oldCap <= 0) $oldCap = $startCap;
+                $newCap = round($oldCap * 0.7 + $capUsed * 0.3, 2);
+                setAppSetting('calibratedCapacity', (string)$newCap);
+                db()->prepare('INSERT INTO capacity_learning (ts, startTs, endTs, capUsed, oldCap, newCap) VALUES (?,?,?,?,?,?)')
+                    ->execute([$now, $startTs, $now, round($capUsed, 2), $oldCap, $newCap]);
+                ingestLog("[容量校准] 完成: 消耗={$capUsed}Ah, 校准容量 {$oldCap}→{$newCap}Ah");
+            } else {
+                ingestLog("[容量校准] 消耗过少({$capUsed}Ah<{$minAh}Ah), 跳过");
+            }
+            setAppSetting('capPhase', 'idle');
+            setAppSetting('capWasDischarging', 'false');
+        }
+        if ($isDischarge) {
+            setAppSetting('capWasDischarging', 'true');
+        }
+    }
+}

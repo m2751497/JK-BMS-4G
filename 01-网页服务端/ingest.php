@@ -13,6 +13,7 @@ if (!defined('JK_INCLUDED')) { http_response_code(403); exit('forbidden'); }
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/parser.php';
 require_once __DIR__ . '/range.php';
+require_once __DIR__ . '/insight.php';   // ★融合: 告警 + 充电循环
 
 /** 写入接收日志（文件，替代 bridge 终端日志）；function_exists 防与其他文件的兜底定义冲突 */
 if (!function_exists('ingestLog')) {
@@ -94,6 +95,11 @@ function handleBMSData(array $data): void
 
         // 里程学习
         updateRangeLearning($data);
+
+        // ★融合参考 Node 版: 告警检测 + 充电循环记录 + 容量校准学习
+        checkAlarms($data);
+        checkChargeCycle($data);
+        updateCapacityLearning($data);
     } catch (Throwable $e) {
         ingestLog("⚠ BMS 写库失败: " . $e->getMessage());
         return;

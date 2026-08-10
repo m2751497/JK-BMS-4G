@@ -140,6 +140,30 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);overflow
         </div>
       </div>
     </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🔋 容量校准 <span style="font-size:11px;color:var(--sub)">(满充→放电自动学)</span></div></div>
+      <div class="panel-body">
+        <div class="setting-row">
+          <span class="data-label">校准总容量</span>
+          <span id="calibratedCap" style="color:var(--blue)">--</span>
+        </div>
+        <div class="setting-row">
+          <span class="data-label">自动校准</span>
+          <span><label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="capLearningCb" onchange="saveCapLearning(this.checked)" style="width:14px;height:14px;accent-color:#64ffda">
+            <span style="font-size:12px">开启</span></label></span>
+        </div>
+        <div id="capHistory" style="font-size:12px;color:var(--sub);margin-top:4px"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🚨 告警 <span style="font-size:11px;color:var(--sub)">(近24h)</span></div></div>
+      <div id="alarms-body" style="max-height:180px;overflow-y:auto"><div class="empty">暂无告警</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🔁 充电循环 <span style="font-size:11px;color:var(--sub)">(近30天)</span></div></div>
+      <div id="cycles-body" style="max-height:180px;overflow-y:auto"><div class="empty">暂无记录</div></div>
+    </div>
   </div>
 </div>
 
@@ -483,6 +507,58 @@ async function saveRangeFactor(){
   if (!v || v<0.1 || v>50) { alert('请输入 0.1~50 之间的数值'); return; }
   await fetch(API+'?action=range', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rangeFactor:v})});
   loadLatest();
+}
+
+// ==================== 告警 / 充电循环 / 容量校准 (★融合参考 Node 版) ====================
+async function loadAlarms(){
+  try {
+    const d = await (await fetch(API+'?action=alarms&hours=24', {cache:'no-store'})).json();
+    const el = $('alarms-body'); if (!el) return;
+    if (!d.data || !d.data.length) { el.innerHTML = '<div class="empty">暂无告警</div>'; return; }
+    el.innerHTML = d.data.map(a => {
+      const lv = a.level === 'critical' ? 'var(--red)' : '#f59e0b';
+      const t = new Date(a.ts).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+      return `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px">
+        <span style="color:${lv};flex:0 0 auto;font-weight:600">${a.level==='critical'?'[严重]':'[警告]'}</span>
+        <span style="color:var(--text);flex:1">${a.message}</span>
+        <span style="color:var(--sub);flex:0 0 auto">${t}</span></div>`;
+    }).join('');
+  } catch(e){}
+}
+
+async function loadChargeCycles(){
+  try {
+    const d = await (await fetch(API+'?action=chargecycles&days=30', {cache:'no-store'})).json();
+    const el = $('cycles-body'); if (!el) return;
+    if (!d.data || !d.data.length) { el.innerHTML = '<div class="empty">暂无充电记录</div>'; return; }
+    el.innerHTML = d.data.map(c => {
+      const s = new Date(c.startTime).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+      return `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px">
+        <span style="color:var(--green);flex:0 0 auto">${c.chargedAh}Ah</span>
+        <span style="color:var(--text);flex:1">SOC ${c.startSOC}%→${c.endSOC}%</span>
+        <span style="color:var(--sub);flex:0 0 auto">${s}</span></div>`;
+    }).join('');
+  } catch(e){}
+}
+
+async function loadCapacity(){
+  try {
+    const d = await (await fetch(API+'?action=capacity', {cache:'no-store'})).json();
+    const cap = $('calibratedCap'); if (!cap) return;
+    cap.textContent = d.calibratedCapacity > 0 ? d.calibratedCapacity + ' Ah' : '未校准(用额定容量)';
+    const cb = $('capLearningCb'); if (cb) cb.checked = !!d.enabled;
+    const hist = $('capHistory');
+    if (hist) {
+      hist.innerHTML = d.records && d.records.length
+        ? d.records.slice(0,5).map(r => `最近校准: ${r.oldCap}→${r.newCap}Ah (${new Date(r.ts).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit'})})`).join('<br>')
+        : '暂无校准记录（满充后放电一次自动学习）';
+    }
+  } catch(e){}
+}
+
+async function saveCapLearning(enabled){
+  await fetch(API+'?action=capacity', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled})});
+  loadCapacity();
 }
 
 // ==================== GPS 地图 ====================
@@ -929,9 +1005,12 @@ async function saveSettings(){
 // ==================== 启动 ====================
 setInterval(heartbeat, 5000);
 setInterval(loadTrack, 30000); // 轨迹统计每 30 秒刷新
+setInterval(loadAlarms, 30000);    // ★融合: 告警 30s 刷新
+setInterval(loadChargeCycles, 60000); // ★融合: 充电循环 60s 刷新
+setInterval(loadCapacity, 30000);  // ★融合: 容量校准 30s 刷新
 initReplayMap(); // 提前创建回放地图（隐藏容器在 visibility 方案下也有尺寸，避免切 Tab 时渲染问题）
 initWeather();   // 天气插件（高德 AMap.Weather + 逆地理编码）
-loadTrackDates(); loadSettings(); loadLatest(); heartbeat(); loadTrack();
+loadTrackDates(); loadSettings(); loadLatest(); heartbeat(); loadTrack(); loadAlarms(); loadChargeCycles(); loadCapacity();
 </script>
 </body>
 </html>
