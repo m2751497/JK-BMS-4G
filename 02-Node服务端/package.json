@@ -1,0 +1,17 @@
+{
+  "name": "jk-bms-4g-node",
+  "version": "1.0.0",
+  "description": "JK-BMS 4G 远程监控网关 — Node.js 常驻进程版 (MQTT 长连接 + SQLite + Express)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2",
+    "mqtt": "^5.10.4",
+    "ws": "^8.18.1"
+  }
+}

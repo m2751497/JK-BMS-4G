@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>JK BMS 4G 监控看板</title>
+<script>
+window._AMapSecurityConfig = { securityJsCode: '' };
+</script>
+<style>
+:root{
+  --bg:#0b1016; --card:#131b24; --line:#223140; --text:#dbe7f3;
+  --sub:#6f8399; --blue:#00cfff; --green:#00ff9d; --red:#ff4d67; --yellow:#ffb020;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;background:var(--bg);color:var(--text);overflow:hidden;font-family:sans-serif}
+#tabs{position:absolute;top:0;left:0;right:0;height:48px;background:var(--card);border-bottom:1px solid var(--line);display:flex;z-index:999}
+.tab{flex:1;background:none;color:var(--sub);font-size:15px;border:none;cursor:pointer}
+.tab.active{color:var(--blue);border-bottom:2px solid var(--blue)}
+/* 用 visibility 切换 Tab（不用 display:none）：隐藏页面的容器仍保留尺寸，地图瓦片才能正常渲染 */
+.page{position:absolute;top:48px;left:0;right:0;bottom:0;visibility:hidden;pointer-events:none;overflow:hidden}
+.page.active{visibility:visible;pointer-events:auto}
+#container{width:100%;height:100%}
+.info-card{position:absolute;top:12px;left:12px;width:280px;background:rgba(19,27,36,.96);border:1px solid var(--line);border-radius:12px;padding:14px;z-index:100}
+.info-title{font-weight:bold;margin-bottom:10px;font-size:14px}
+.info-title small{color:var(--sub);font-weight:normal}
+.info-row{margin:7px 0;color:var(--sub);font-size:13px}
+.speed{color:var(--blue);font-size:28px;font-weight:bold}
+.range-km{color:var(--green);font-size:22px;font-weight:bold}
+.range-km small{font-size:12px;color:var(--sub);font-weight:normal}
+.status-on{color:var(--green)}
+.status-off{color:var(--red)}
+.status-mode{color:var(--yellow)}
+#bms-page{overflow-y:auto;padding:12px}
+.bms-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:1200px;margin:auto}
+@media(max-width:800px){.bms-grid{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.panel-header{padding:12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+.panel-title{color:var(--blue);font-weight:bold}
+.panel-body{padding:10px 14px}
+.data-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px}
+.data-label{color:var(--sub)}
+.group-title{color:var(--sub);font-size:12px;padding:12px 14px 0}
+.cell-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;padding:12px}
+@media(max-width:700px){.cell-grid{grid-template-columns:repeat(4,1fr)}}
+.cell{background:#10161d;border:1px solid var(--line);border-radius:8px;text-align:center;padding:8px}
+.cell-num{font-size:11px;color:var(--sub)}
+.cell-val{margin-top:5px;font-size:14px}
+.cell-high{border-color:var(--red)}
+.cell-low{border-color:var(--yellow)}
+.empty{padding:40px;text-align:center;color:var(--sub)}
+.big{font-weight:bold;font-size:1.1em}
+.setting-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.setting-row input{background:#0a0e14;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 8px;width:90px;text-align:center}
+.btn{background:#1b2733;color:white;border:none;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px}
+.btn:hover{background:#223243}
+#log-line{position:absolute;bottom:8px;left:12px;font-size:11px;color:var(--sub);z-index:101}
+</style>
+<script>
+async function authGate(){try{const r=await fetch('/api/authcheck');const d=await r.json();if(!d.ok){location.href='/login.html';}}catch(e){location.href='/login.html';}}
+async function loadAmap(){try{const d=await(await fetch('/api/settings')).json();const key=d.amapKey||'';if(!key)return;window._AMapSecurityConfig={securityJsCode:d.amapSecurity||''};const s=document.createElement('script');s.src='https://webapi.amap.com/maps?v=2.0&key='+key;document.head.appendChild(s);}catch(e){}}
+loadAmap();
+</script>
+</head>
+<body>
+
+<div id="tabs">
+  <button class="tab active" onclick="switchTab('gps',this)">📡 GPS</button>
+  <button class="tab" onclick="switchTab('bms',this)">🔋 BMS</button>
+  <button class="tab" onclick="switchTab('track',this)">🚗 轨迹</button>
+  <button class="tab" onclick="switchTab('settings',this)">⚙️ 设置</button>
+  <a href="/api/logout" class="tab" style="flex:0 0 64px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:13px" title="退出登录">退出</a>
+</div>
+
+<!-- GPS 页 -->
+<div class="page active" id="gps-page">
+  <div class="info-card">
+    <div class="info-title">
+      状态:
+      <span id="online-status" class="status-off">离线</span>
+      <small id="mode-status" class="status-mode" style="margin-left:6px">track</small>
+    </div>
+    <div class="info-row">速度:
+      <div class="speed" id="speed">-- km/h</div>
+    </div>
+    <div class="info-row">经度:<span id="lng" style="color:var(--text)">--</span></div>
+    <div class="info-row">纬度:<span id="lat" style="color:var(--text)">--</span></div>
+    <div class="info-row">续航里程:<div class="range-km" id="rangeKm">-- <small>km</small></div></div>
+    <div class="info-row">今日轨迹:<span id="todayKm" style="color:var(--text)">-- km</span>
+      <span style="margin-left:8px">4G信号:<span id="csq" style="color:var(--text)">--</span></span>
+    </div>
+    <div class="info-row">卫星状态:<span id="satState" style="color:var(--text)">--</span></div>
+    <div class="info-row">蓝牙:<span id="bleState" style="color:var(--text)">--</span></div>
+    <div class="info-row">天气:<span id="weather-icon" style="font-size:16px">☁️</span> <span id="weather-desc" style="color:var(--text)">--</span> <span id="weather-temp" style="color:var(--yellow)">--</span></div>
+    <div class="info-row" style="margin-top:6px;font-size:11px;color:var(--sub)" id="update-time"></div>
+  </div>
+  <div id="container"></div>
+</div>
+
+<!-- BMS 页 -->
+<div class="page" id="bms-page">
+  <div class="bms-grid">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">⚡ BMS 状态</div>
+        <div id="status-time" style="color:var(--sub);font-size:12px">--</div>
+      </div>
+      <div id="status-body"><div class="empty">等待数据...</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🔋 单体电压</div></div>
+      <div id="cells-body"><div class="empty">等待数据</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">⚙️ 里程设置</div></div>
+      <div class="panel-body">
+        <div class="setting-row">
+          <span class="data-label">里程基数 (km/Ah)</span>
+          <span><input id="rangeFactorInput" type="number" step="0.1" min="0.1" max="50">
+          <button class="btn" onclick="saveRangeFactor()">保存</button></span>
+        </div>
+        <div class="setting-row">
+          <span class="data-label">自动学习</span>
+          <span id="learningState" style="color:var(--green)">--</span>
+        </div>
+        <div id="learningStatus" style="font-size:12px;color:var(--sub);margin-top:2px"></div>
+        <div id="learn-history" style="margin-top:6px;font-size:12px;color:var(--sub)"></div>
+        <div style="margin-top:8px;font-size:12px;color:var(--sub)">
+          续航 = 剩余容量(Ah) × 里程基数(km/Ah)<br>
+          自动学习：每次充电结束记录基准，下次充电时用消耗电量与轨迹里程自动修正基数（不要求充满）
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🔋 容量校准 <span style="font-size:11px;color:var(--sub)">(满充→放电自动学)</span></div></div>
+      <div class="panel-body">
+        <div class="setting-row">
+          <span class="data-label">校准总容量</span>
+          <span id="calibratedCap" style="color:var(--blue)">--</span>
+        </div>
+        <div class="setting-row">
+          <span class="data-label">自动校准</span>
+          <span><label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="capLearningCb" onchange="saveCapLearning(this.checked)" style="width:14px;height:14px;accent-color:#64ffda">
+            <span style="font-size:12px">开启</span></label></span>
+        </div>
+        <div id="capHistory" style="font-size:12px;color:var(--sub);margin-top:4px"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🚨 告警 <span style="font-size:11px;color:var(--sub)">(近24h)</span></div></div>
+      <div id="alarms-body" style="max-height:180px;overflow-y:auto"><div class="empty">暂无告警</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">🔁 充电循环 <span style="font-size:11px;color:var(--sub)">(近30天)</span></div></div>
+      <div id="cycles-body" style="max-height:180px;overflow-y:auto"><div class="empty">暂无记录</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="log-line"></div>
+
+<!-- 轨迹页（行驶轨迹统计卡片） -->
+<div class="page" id="track-page">
+  <div style="padding:12px;height:100%;overflow-y:auto">
+    <div class="bms-grid">
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">📊 今日行驶</div>
+          <span id="track-today-time" style="color:var(--sub);font-size:12px">--</span></div>
+        <div class="panel-body" id="track-today">
+          <div class="empty">暂无轨迹数据</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">📅 每日统计</div>
+          <select id="stat-date" onchange="loadDailyStats()" style="background:var(--card);color:var(--text);border:1px solid #2a3a4a;border-radius:6px;padding:4px 8px;font-size:12px">
+            <option value="">加载中...</option>
+          </select></div>
+        <div class="panel-body" id="track-total">
+          <div class="empty">暂无轨迹数据</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">🚗 今日行程</div>
+          <span id="trip-today-count" style="color:var(--sub);font-size:12px">--</span></div>
+        <div class="panel-body" id="trip-list" style="max-height:280px;overflow-y:auto">
+          <div class="empty">加载中...</div>
+        </div>
+      </div>
+      <div class="panel" style="grid-column:1 / -1">
+        <div class="panel-header"><div class="panel-title">🎬 轨迹回放（按日期）</div></div>
+        <div class="panel-body">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+            <span style="font-size:13px;color:var(--sub)">日期:</span>
+            <select id="replay-date" onchange="onDateChange()" style="background:var(--card);color:var(--text);border:1px solid #2a3a4a;border-radius:6px;padding:6px 10px;font-size:13px">
+              <option value="">加载中...</option>
+            </select>
+            <span style="font-size:13px;color:var(--sub)">行程:</span>
+            <select id="replay-trip" style="background:var(--card);color:var(--text);border:1px solid #2a3a4a;border-radius:6px;padding:6px 10px;font-size:13px">
+              <option value="-1">全部行程</option>
+            </select>
+            <button class="btn" onclick="loadReplay()">📂 加载轨迹</button>
+            <button class="btn" id="replay-play" onclick="playReplay()">▶ 播放</button>
+            <span style="font-size:13px;color:var(--sub)">倍速:</span>
+            <button class="btn" onclick="setReplaySpeed(1)">1x</button>
+            <button class="btn" onclick="setReplaySpeed(2)">2x</button>
+            <button class="btn" onclick="setReplaySpeed(4)">4x</button>
+            <button class="btn" onclick="setReplaySpeed(8)">8x</button>
+          </div>
+          <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--text)">
+            <span>进度:<b id="replay-progress">--</b></span>
+            <span>时间:<b id="replay-time">--</b></span>
+            <span>速度:<b id="replay-speed">--</b></span>
+            <span>点数:<b id="replay-count">--</b></span>
+          </div>
+          <div id="replay-map" style="position:relative;height:260px;margin-top:8px;border-radius:8px;background:#101418">
+            <div id="replay-map-tip" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#6f8399;font-size:13px">选择日期后点击「加载轨迹」查看地图</div>
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="grid-column:1 / -1">
+        <div class="panel-header"><div class="panel-title">ℹ️ 说明</div></div>
+        <div class="panel-body" style="font-size:12px;color:var(--sub)">
+          · 轨迹由 GPS 模块按间隔上报自动记录（移动 2s 实时 / 静止自动停发；速度≥3km/h 且位移≥30m 判运动，防漂移）<br>
+          · 里程 = 相邻轨迹点球面距离累加（haversine）<br>
+          · **每次行程单独统计**：相邻轨迹点间隔超过 5 分钟即视为新行程（停车/关机断开）<br>
+          · 行驶时长 = 移动段时间累加（相邻点位移 >20m 才算移动，停车原地不计）<br>
+          · 网页关闭后 GPS 移动时仍 2s 记录轨迹（静止停发），里程与续航学习不受影响<br>
+          · GPS 间隔可在「⚙️ 设置」页调整，调快轨迹更密集
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 设置页 -->
+<div class="page" id="settings-page">
+  <div style="padding:12px;height:100%;overflow-y:auto">
+    <div class="bms-grid">
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">⚙️ 刷新频率设置</div></div>
+        <div class="panel-body">
+          <div class="setting-row"><span class="data-label">网页刷新间隔（秒）</span><input id="set-webPollSec" type="number" min="1" max="30" style="width:80px"></div>
+          <div class="setting-row"><span class="data-label">实时模式 BMS（秒）</span><input id="set-realtimeBmsSec" type="number" min="1" max="300" style="width:80px"></div>
+          <div class="setting-row"><span class="data-label">实时模式 GPS（秒）</span><input id="set-realtimeGpsSec" type="number" min="1" max="300" style="width:80px"></div>
+          <div class="setting-row"><span class="data-label">数据保留天数（天）</span><input id="set-dataRetentionDays" type="number" min="0" max="3650" style="width:80px"></div>
+          <div style="margin-top:12px"><button class="btn" onclick="saveSettings()" style="width:100%">💾 保存设置</button></div>
+          <div style="margin-top:8px;font-size:12px;color:var(--sub)">
+            · 网页刷新间隔：浏览器拉取数据的频率（默认 3 秒）<br>
+            · 实时模式 BMS / GPS：网页打开时的上报间隔（默认 2 秒），保存后经 MQTT 下发生效<br>
+            · GPS 移动时 2s 实时、静止自动停发；BMS 网页打开 2s、网页关闭 30s（自动，无需设置）<br>
+            · 数据保留天数：超过自动清理数据库旧数据（0=不清理）
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">🗺️ 高德地图设置</div></div>
+        <div class="panel-body">
+          <div class="setting-row"><span class="data-label">JS API Key</span><input id="set-amapKey" type="text" style="width:220px"></div>
+          <div class="setting-row"><span class="data-label">安全密钥</span><input id="set-amapSecurity" type="text" style="width:220px"></div>
+          <div style="margin-top:12px"><button class="btn" onclick="saveAmap()" style="width:100%">💾 保存地图</button></div>
+          <div style="margin-top:8px;font-size:12px;color:var(--sub)">
+            · 高德开放平台「Web端(JS API)」Key + 安全密钥，保存后刷新页面生效
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">🔐 登录账号设置</div></div>
+        <div class="panel-body">
+          <div class="setting-row"><span class="data-label">登录账号</span><input id="set-authUsername" type="text" style="width:140px"></div>
+          <div class="setting-row"><span class="data-label">当前密码</span><input id="set-authCurrent" type="password" style="width:140px"></div>
+          <div class="setting-row"><span class="data-label">新密码</span><input id="set-authPassword" type="password" style="width:140px" placeholder="留空不修改"></div>
+          <div style="margin-top:12px"><button class="btn" onclick="saveAuth()" style="width:100%">💾 保存账号</button></div>
+          <div style="margin-top:8px;font-size:12px;color:var(--sub)">
+            · 修改账号/密码需输入当前密码验证，保存后下次登录生效
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">🔌 设备远程控制</div></div>
+        <div class="panel-body">
+          <div style="margin-top:4px"><button class="btn" onclick="remoteReboot()" style="width:100%">🔄 远程重启设备</button></div>
+          <div style="margin-top:8px;font-size:12px;color:var(--sub)">
+            · 通过 EMQX 下行指令重启 ESP32（约 10 秒恢复）<br>
+            · <b>前提：设备与服务器的下行链路正常</b>（网页能看到"实时模式"且数据在刷新时，重启指令才能送达）<br>
+            · 若设备已断数据（下行不通），本按钮无效 —— 此时可开一次网页（触发下行）或由固件自愈/定时重启兜底
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">📶 流量用量参考</div></div>
+        <div class="panel-body" style="font-size:12px;color:var(--sub)">
+          · GPS：移动 2s 实时 / 静止自动停发（网页开/关一致），车辆移动自动恢复<br>
+          · BMS：网页打开 2s 实时（充/放电/停放一致），网页关闭 30s（保里程与续航学习）<br>
+          · GPS 2s ≈ 55KB/小时；BMS 2s ≈ 630KB/小时；网页关闭后 BMS 30s ≈ 0.36MB/天<br>
+          · 按每天开网页 2 小时估算：<b>约 35MB/月</b>，300MB 套餐余量充足<br>
+          · GPS/BMS 间隔可在上方「刷新频率设置」调整（1~300 秒）
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== 状态 ====================
+const uid = 'web_' + Math.random().toString(16).slice(2);
+const API = '/api';
+let todayDistance = 0;
+let pollTimer = null;
+
+function $(id){ return document.getElementById(id); }
+function nowStr(){ return new Date().toLocaleTimeString(); }
+
+function switchTab(name, btn){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  $(name+'-page').classList.add('active');
+  // v2.19: 记录当前页并立即通知服务端 —— 只有切到 BMS 页才 high频 realtime, 其他页回 track 省流
+  window.currentPage = name;
+  heartbeat();
+  // 轨迹页：若地图已创建则重算尺寸，否则延迟到布局完成后自动加载
+  if (name === 'track'){
+    if (replayMap) replayMap.resize();
+    else setTimeout(loadReplay, 150);
+  } else if (name === 'gps' && map){
+    map.resize();
+  }
+}
+
+// ==================== 轮询 / 心跳 ====================
+let lastUpdateTs = null; // 最新数据时间戳（毫秒）
+
+async function loadLatest(){
+  try{
+    const d = await (await fetch(API+'?action=latest', {cache:'no-store'})).json();
+    lastUpdateTs = d.lastUpdate || null;
+    // 数据过期检测：lastUpdate 超过 90 秒视为服务离线（缓存里是旧快照）
+    // 注意: track 模式设备每 30 秒才上报一次, 阈值必须大于 30s, 否则网页会周期性误报"数据已过期"
+    if (!lastUpdateTs || (Date.now() - lastUpdateTs) > 90000){
+      showExpired();
+      return;
+    }
+    updateStatus(d);
+    if (d.bms) updateBms(d.bms);
+    if (d.gps) updateGps(d.gps);
+    if (d.range) updateRange(d.range);
+  }catch(e){}
+}
+
+// 服务离线：清空实时数据，保留历史（今日轨迹/续航由历史计算）
+function showExpired(){
+  const el = $('online-status');
+  el.textContent = '数据已过期';
+  el.className = 'status-mode';
+  $('mode-status').textContent = ' 服务离线';
+  $('update-time').textContent = '最后数据: ' + (lastUpdateTs ? new Date(lastUpdateTs).toLocaleTimeString() : '--') + '（服务已停止，显示的是缓存快照）';
+  $('speed').textContent = '-- km/h';
+  $('lng').textContent = '--';
+  $('lat').textContent = '--';
+  $('satState').textContent = '--';
+  $('csq').textContent = '--';
+  $('bleState').textContent = '--';
+  $('bleState').style.color = 'var(--red)';
+}
+
+function heartbeat(){ fetch(API+'?action=heartbeat&uid='+uid+'&page='+(window.currentPage||'gps'), {cache:'no-store'}); }
+
+// ==================== 状态栏 ====================
+let g_bleConnected = false; // 全局蓝牙连接状态 (BMS 数据有效性判断)
+function updateStatus(d){
+  const on = d.online > 0;
+  const el = $('online-status');
+  el.textContent = on ? '在线('+d.online+')' : '离线';
+  el.className = on ? 'status-on' : 'status-off';
+  $('mode-status').textContent = d.mode === 'realtime' ? '实时模式' : '追踪模式';
+  $('update-time').textContent = '数据更新: ' + (d.lastUpdate ? new Date(d.lastUpdate).toLocaleTimeString() : '--');
+  if (d.status){
+    if (d.status.csq !== undefined) $('csq').textContent = d.status.csq;
+    if (d.status.bleConnected !== undefined){
+      g_bleConnected = d.status.bleConnected; // 记录蓝牙连接状态
+      const BLE_CN = { connected:'已连接', scanning:'扫描中…', disconnected:'已断开', connecting:'连接中…', idle:'空闲', unknown:'未知' };
+      const st = BLE_CN[d.status.bleState] || d.status.bleState || '未连接';
+      $('bleState').textContent = d.status.bleConnected ? '已连接 ' + (d.status.bleMac || '') : st;
+      $('bleState').style.color = d.status.bleConnected ? 'var(--green)' : 'var(--red)';
+    }
+  }
+}
+
+// ==================== BMS ====================
+// 电流显示: 充电 +xx A / 放电 -xx A / 0 → 0.00 A (全部绿色)
+function formatCurrent(c){
+  c = (c ?? 0);
+  if (c > 0) return '+' + c.toFixed(2) + ' A'; // 充电带正号
+  return c.toFixed(2) + ' A';                   // 放电(负号自带) / 0.00 A
+}
+function updateBms(d){
+  // BMS 蓝牙未连接时: 明确提示, 不显示残留/模拟数据, 避免误导
+  if (!g_bleConnected){
+    $('status-time').textContent = nowStr();
+    $('status-body').innerHTML =
+      '<div class="group-title">⚠ BMS 未连接</div>'+
+      '<div class="panel-body"><div class="data-row"><span class="data-label">状态</span>'+
+      '<span style="color:var(--yellow)">等待 BMS 蓝牙连接后显示数据…</span></div></div>';
+    $('cells-body').innerHTML = '';
+    return;
+  }
+  if (!d || !d.totalVoltage) { $('status-time').textContent = nowStr(); return; }
+  $('status-time').textContent = nowStr();
+
+  const mos = (d.chargeMOS?'充开':'充关') + ' / ' + (d.dischargeMOS?'放开':'放关') + ' / ' + (d.balancerOn?'均衡中':'均衡关');
+  const html = `
+    <div class="group-title">⚡ 电池状态 · ${d.cellCount||'--'}串</div>
+    <div class="panel-body">
+      <div class="data-row"><span class="data-label">总电压</span><span class="big" style="color:var(--blue)">${(d.totalVoltage??0).toFixed(2)} V</span></div>
+      <div class="data-row"><span class="data-label">电流</span><span class="big" style="color:var(--green)">${formatCurrent(d.current)}</span></div>
+      <div class="data-row"><span class="data-label">功率</span><span>${(d.power??0).toFixed(1)} W</span></div>
+      <div class="data-row"><span class="data-label">SOC / SOH</span><span style="white-space:nowrap"><span class="big" style="color:var(--green)">${d.soc??'--'}%</span>&nbsp;/&nbsp;${d.soh??'--'}%</span></div>
+      <div class="data-row"><span class="data-label">最高/最低单体</span><span>${(d.maxCellV??0).toFixed(3)} / ${(d.minCellV??0).toFixed(3)} V</span></div>
+      <div class="data-row"><span class="data-label">单体压差</span><span style="color:${(d.deltaCellV??0)>=0.05?'var(--yellow)':'var(--text)'}">${((d.deltaCellV??0)*1000).toFixed(0)} mV</span></div>
+      <div class="data-row"><span class="data-label">温度</span><span>T1:${d.temp1??'--'}℃ T2:${d.temp2??'--'}℃ MOS:${d.mosTemp??'--'}℃</span></div>
+      <div class="data-row"><span class="data-label">循环次数</span><span>${d.cycleCount??'--'}</span></div>
+      <div class="data-row"><span class="data-label">运行时间</span><span>${d.runtimeStr??'--'}</span></div>
+      <div class="data-row"><span class="data-label">MOS 状态</span><span>${mos}</span></div>
+      <div class="data-row"><span class="data-label">剩余 / 额定容量</span><span class="big">${(d.capRemain??0).toFixed(2)} / ${(d.capNominal??0).toFixed(2)} Ah</span></div>
+      <div class="data-row"><span class="data-label">循环容量</span><span>${(d.cycleCap??0).toFixed(3)} Ah</span></div>
+      <div class="data-row"><span class="data-label">当前续航（估算）</span><span class="big" style="color:var(--green)">${rangeKmText()} km</span></div>
+    </div>`;
+  $('status-body').innerHTML = html;
+
+  // 单体电压网格
+  const cells = d.cellVoltages || [];
+  let c = '<div class="group-title">🔋 单体电压 ('+cells.length+'串)</div><div class="cell-grid">';
+  const valid = cells.filter(v=>v>0);
+  const maxV = valid.length?Math.max(...valid):0;
+  const minV = valid.length?Math.min(...valid):0;
+  cells.forEach((v,i)=>{
+    if (v<=0) return;
+    let cls = (v===maxV)?'cell-high':(v===minV?'cell-low':'');
+    c += `<div class="cell ${cls}"><div class="cell-num">C${String(i+1).padStart(2,'0')}</div><div class="cell-val">${v.toFixed(3)}</div></div>`;
+  });
+  c += '</div>';
+
+  // 内阻
+  const res = d.cellResist || [];
+  let r = '<div class="group-title">📡 线束内阻</div><div class="cell-grid">';
+  let resCount = 0;
+  res.forEach((v,i)=>{
+    if (cells[i]>0 && v>0){
+      resCount++;
+      r += `<div class="cell"><div class="cell-num">C${String(i+1).padStart(2,'0')}</div><div class="cell-val">${v.toFixed(3)}Ω</div></div>`;
+    }
+  });
+  r += '</div>';
+  $('cells-body').innerHTML = c + r;
+}
+
+let lastRangeKm = null;
+function updateRange(r){
+  if (!r) return;
+  lastRangeKm = r.rangeKm;
+  $('rangeKm').innerHTML = (r.rangeKm!==null&&r.rangeKm!==undefined) ? r.rangeKm+' <small>km</small>' : '-- <small>km</small>';
+  // ★修复: 轮询回填前检查输入框是否正在被编辑(聚焦), 否则用户输入会被每3秒的刷新覆盖
+  if (document.activeElement !== $('rangeFactorInput')) {
+    $('rangeFactorInput').value = r.rangeFactor || '';
+  }
+  $('learningState').textContent = r.learningEnabled !== undefined ? (r.learningEnabled?'开启':'关闭') : '--';
+  // 学习运行状态 + 历史记录
+  const ls = $('learningStatus');
+  if (ls){
+    const ph = r.learnPhase === 'charging'
+      ? '⏳ 充电中… 结束后记录基准，下次充电自动结算'
+      : r.learnPhase === 'ready'
+        ? '✅ 基准就绪：上次充电结束容量已记录，下次充电时自动结算'
+        : '💤 等待首次充电：充一次电（任意电量）后建立基准';
+    ls.textContent = (r.learningEnabled === false ? '学习已关闭' : ph);
+    ls.style.color = r.learnPhase === 'charging' ? 'var(--yellow)' : 'var(--sub)';
+  }
+  const lh = $('learn-history');
+  if (lh){
+    if (!r.learnHistory || !r.learnHistory.length){
+      lh.innerHTML = '<div>暂无学习记录：充满一次并骑行后，再次充电时自动生成（见 ingest.log）</div>';
+    } else {
+      lh.innerHTML = '<div style="margin-bottom:4px;color:var(--text)">最近学习记录：</div>' +
+        r.learnHistory.map(h => {
+          const t = new Date(h.ts).toLocaleString();
+          return '<div>'+t+' · '+h.distance+'km / '+h.capUsed+'Ah → 基数 '+h.newFactor+'</div>';
+        }).join('');
+    }
+  }
+}
+function rangeKmText(){
+  return (lastRangeKm!==null&&lastRangeKm!==undefined)?lastRangeKm:'--';
+}
+
+async function saveRangeFactor(){
+  const v = parseFloat($('rangeFactorInput').value);
+  if (!v || v<0.1 || v>50) { alert('请输入 0.1~50 之间的数值'); return; }
+  await fetch(API+'?action=range', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rangeFactor:v})});
+  loadLatest();
+}
+
+// ==================== 告警 / 充电循环 / 容量校准 (★融合参考 Node 版) ====================
+async function loadAlarms(){
+  try {
+    const d = await (await fetch(API+'?action=alarms&hours=24', {cache:'no-store'})).json();
+    const el = $('alarms-body'); if (!el) return;
+    if (!d.data || !d.data.length) { el.innerHTML = '<div class="empty">暂无告警</div>'; return; }
+    el.innerHTML = d.data.map(a => {
+      const lv = a.level === 'critical' ? 'var(--red)' : '#f59e0b';
+      const t = new Date(a.ts).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+      return `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px">
+        <span style="color:${lv};flex:0 0 auto;font-weight:600">${a.level==='critical'?'[严重]':'[警告]'}</span>
+        <span style="color:var(--text);flex:1">${a.message}</span>
+        <span style="color:var(--sub);flex:0 0 auto">${t}</span></div>`;
+    }).join('');
+  } catch(e){}
+}
+
+async function loadChargeCycles(){
+  try {
+    const d = await (await fetch(API+'?action=chargecycles&days=30', {cache:'no-store'})).json();
+    const el = $('cycles-body'); if (!el) return;
+    if (!d.data || !d.data.length) { el.innerHTML = '<div class="empty">暂无充电记录</div>'; return; }
+    el.innerHTML = d.data.map(c => {
+      const s = new Date(c.startTime).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+      return `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px">
+        <span style="color:var(--green);flex:0 0 auto">${c.chargedAh}Ah</span>
+        <span style="color:var(--text);flex:1">SOC ${c.startSOC}%→${c.endSOC}%</span>
+        <span style="color:var(--sub);flex:0 0 auto">${s}</span></div>`;
+    }).join('');
+  } catch(e){}
+}
+
+async function loadCapacity(){
+  try {
+    const d = await (await fetch(API+'?action=capacity', {cache:'no-store'})).json();
+    const cap = $('calibratedCap'); if (!cap) return;
+    cap.textContent = d.calibratedCapacity > 0 ? d.calibratedCapacity + ' Ah' : '未校准(用额定容量)';
+    const cb = $('capLearningCb'); if (cb) cb.checked = !!d.enabled;
+    const hist = $('capHistory');
+    if (hist) {
+      hist.innerHTML = d.records && d.records.length
+        ? d.records.slice(0,5).map(r => `最近校准: ${r.oldCap}→${r.newCap}Ah (${new Date(r.ts).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit'})})`).join('<br>')
+        : '暂无校准记录（满充后放电一次自动学习）';
+    }
+  } catch(e){}
+}
+
+async function saveCapLearning(enabled){
+  await fetch(API+'?action=capacity', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled})});
+  loadCapacity();
+}
+
+// ==================== GPS 地图 ====================
+let map = null, marker = null, lastGps = null;
+try {
+  map = new AMap.Map('container', {zoom:15, center:[113.223351,33.774272]});
+  marker = new AMap.Marker({map:map});
+} catch (e) {
+  console.error('GPS地图初始化失败：请检查高德Key域名白名单是否允许当前访问域名', e);
+}
+let pathData = [];
+
+// ==================== 天气（高德 AMap.Weather 插件，按车辆位置城市） ====================
+const WEATHER_INTERVAL = 10 * 60 * 1000; // 10 分钟刷新一次（防高德额度耗尽）
+let weatherBusy = false;
+
+function renderWeather(w){
+  if (!$('weather-icon')) return;
+  $('weather-icon').textContent = w.icon;
+  $('weather-desc').textContent = w.desc;
+  $('weather-temp').textContent = w.temp + '℃';
+}
+
+function initWeather(){
+  if (!window.AMap) return; // 高德未加载则跳过
+  AMap.plugin(['AMap.Weather', 'AMap.Geocoder'], function(){
+    // 先显示缓存（若有）
+    try{
+      const saved = JSON.parse(localStorage.getItem('bms_weather_cache') || 'null');
+      if (saved && saved.t) renderWeather(saved);
+    }catch(e){}
+    loadWeather();
+    setInterval(loadWeather, WEATHER_INTERVAL);
+  });
+}
+
+function loadWeather(){
+  if (weatherBusy) return; // 上一次请求还没完成
+  try{
+    const saved = JSON.parse(localStorage.getItem('bms_weather_cache') || 'null');
+    if (saved && saved.t && (Date.now() - saved.t) < WEATHER_INTERVAL) return; // 缓存有效
+  }catch(e){}
+  const g = lastGps;
+  if (!g || !g.lon || !g.lat) return; // 还没有定位
+  weatherBusy = true;
+  AMap.convertFrom([g.lon, g.lat], 'gps', (status, result)=>{
+    const done = () => { weatherBusy = false; };
+    if (result.info !== 'ok' || !result.locations || !result.locations[0]) { done(); return; }
+    const pos = result.locations[0];
+    const geocoder = new AMap.Geocoder({});
+    geocoder.getAddress(pos, (st, res)=>{
+      if (st !== 'complete' || !res.regeocode) { done(); return; }
+      const adcode = res.regeocode.addressComponent.adcode;
+      const city = res.regeocode.addressComponent.district || res.regeocode.addressComponent.city;
+      const weather = new AMap.Weather();
+      weather.getLive(adcode, (err, data)=>{
+        done();
+        if (err || !data || !data.weather) return;
+        let icon = '☁️';
+        const w = data.weather;
+        if (w.includes('雨')) icon = '🌧️';
+        else if (w.includes('晴')) icon = '☀️';
+        else if (w.includes('云')) icon = '⛅';
+        else if (w.includes('雪')) icon = '❄️';
+        else if (w.includes('雷')) icon = '⛈️';
+        const info = { t: Date.now(), icon, desc: city + ' · ' + w, temp: data.temperature };
+        localStorage.setItem('bms_weather_cache', JSON.stringify(info));
+        renderWeather(info);
+      });
+    });
+  });
+}
+
+function colorBySpeed(s){
+  if (s<15) return '#00ff9d';
+  if (s<30) return '#ffb020';
+  if (s<50) return '#ff7a00';
+  return '#ff4d67';
+}
+
+function updateGps(g){
+  if (!g) return;
+  if (!g.fix || !g.lon || !g.lat) {
+    $('speed').textContent = '-- km/h';
+    $('satState').textContent = '未定位';
+    $('lng').textContent = '--';
+    $('lat').textContent = '--';
+    return;
+  }
+  lastGps = g;
+  if (typeof loadWeather === 'function') loadWeather(); // 有定位后立即尝试获取天气（缓存有效时零开销）
+  let satTxt = '已定位';
+  if (g.sat) satTxt += ' | 卫星 ' + g.sat + ' 颗' + (g.useSat ? '（参与 ' + g.useSat + '）' : '');
+  if (g.hdop) satTxt += ' | 精度 ±' + (g.hdop * 3).toFixed(1) + 'm'; // HDOP×3 ≈ 误差米（估算）
+  $('satState').textContent = satTxt;
+  $('speed').textContent = (g.speed||0).toFixed(1)+' km/h';
+  $('lng').textContent = g.lon.toFixed(6);
+  $('lat').textContent = g.lat.toFixed(6);
+
+  AMap.convertFrom([g.lon, g.lat], 'gps', (status, result)=>{
+    if (result.info !== 'ok') return;
+    if (!map || !marker) return;
+    const pos = result.locations[0];
+    marker.setPosition(pos);
+    map.setCenter(pos);
+    if (pathData.length>0){
+      const prev = pathData[pathData.length-1];
+      new AMap.Polyline({map:map, path:[prev, pos], strokeColor:colorBySpeed(g.speed||0), strokeWeight:6, strokeOpacity:.85});
+    }
+    pathData.push(pos);
+  });
+}
+
+// 首次加载拉取今日轨迹（用于累计里程显示 + 轨迹卡片）
+function fmtDur(sec){
+  if (!sec) return '--';
+  if (sec < 60) return sec+' 秒';
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  return h>0 ? h+' 小时 '+m+' 分' : m+' 分钟';
+}
+
+// ==================== 行程统计 (每次行程单独一条) ====================
+let trips = [], currentTripIdx = -1;
+
+function dateStr(d){
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function fmtTime(ts){ // ts 为秒
+  const d = new Date(ts*1000);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+
+async function loadTrips(dstr){
+  try{
+    const d = await (await fetch(API+'?action=trips&date='+dstr, {cache:'no-store'})).json();
+    trips = d.trips || [];
+    // 回放区行程下拉
+    const sel = $('replay-trip');
+    sel.innerHTML = '<option value="-1">全部行程</option>';
+    trips.forEach((t,i)=>{
+      const o = document.createElement('option');
+      o.value = i;
+      o.text = '行程'+(i+1)+' '+fmtTime(t.startTs)+'~'+fmtTime(t.endTs)+' '+(t.distanceKm||0).toFixed(1)+'km';
+      sel.appendChild(o);
+    });
+    // 今日行程列表
+    $('trip-today-count').textContent = trips.length ? trips.length+' 个行程' : '今日暂无';
+    if (!trips.length){
+      $('trip-list').innerHTML = '<div class="empty">今日暂无行程</div>';
+      return;
+    }
+    let html = '';
+    trips.forEach((t,i)=>{
+      html += `<div class="trip-item" onclick="loadReplayByTrip(${i})" style="cursor:pointer;padding:8px 10px;margin-bottom:6px;border:1px solid #223140;border-radius:8px;background:rgba(255,255,255,.02)">
+        <div style="font-weight:bold;color:var(--blue)">🚗 行程${i+1} · ${fmtTime(t.startTs)}~${fmtTime(t.endTs)}</div>
+        <div style="font-size:12px;color:var(--sub);margin-top:2px">${(t.distanceKm||0).toFixed(2)} km · ${fmtDur(t.durationSec||0)} · 均速${(t.avgSpeed||0).toFixed(1)} · 最高${(t.maxSpeed||0).toFixed(1)} km/h · ${t.count}点</div>
+      </div>`;
+    });
+    $('trip-list').innerHTML = html;
+  }catch(e){}
+}
+
+function loadReplayByTrip(idx){
+  $('replay-trip').value = idx;
+  loadReplay();
+}
+
+// 日期下拉切换 → 加载该日期行程
+function onDateChange(){
+  const dt = $('replay-date').value;
+  if (dt) loadTrips(dt);
+}
+
+async function loadTrack(){
+  try{
+    // 行程统计(今日卡片 + 行程列表)
+    const d0 = new Date(); d0.setHours(0,0,0,0);
+    await loadTrips(dateStr(d0));
+    // 今日轨迹点(画图用): 按当天 0 点(本地时区)起算, 不是最近 24 小时滑动窗口
+    const from = d0.getTime();
+    const d = await (await fetch(API+'?action=track&from='+from, {cache:'no-store'})).json();
+    // 今日聚合(用行程统计: 时长只算移动时间, 里程只算有效行程)
+    let dist = 0, dur = 0, cnt = 0, maxSpd = 0;
+    trips.forEach(t => {
+      dist += t.distanceKm||0; dur += t.durationSec||0; cnt += t.count||0;
+      if ((t.maxSpeed||0) > maxSpd) maxSpd = t.maxSpeed;
+    });
+    todayDistance = dist;
+    $('todayKm').textContent = dist.toFixed(2)+' km';
+    // 轨迹卡片：今日行驶
+    $('track-today-time').textContent = new Date().toLocaleTimeString();
+    $('track-today').innerHTML = `
+      <div class="data-row"><span class="data-label">行驶里程</span><span class="big" style="color:var(--green)">${dist.toFixed(2)} km</span></div>
+      <div class="data-row"><span class="data-label">行程数</span><span>${trips.length} 个</span></div>
+      <div class="data-row"><span class="data-label">行驶时长</span><span>${fmtDur(dur)}</span></div>
+      <div class="data-row"><span class="data-label">最高速度</span><span style="color:var(--blue)">${maxSpd.toFixed(1)} km/h</span></div>
+      <div class="data-row"><span class="data-label">轨迹点数</span><span>${cnt||d.count||0}</span></div>`;
+    // 绘制历史轨迹
+    const pts = d.points || [];
+    if (map){
+      for (let i=1;i<pts.length;i++){
+        const a = new AMap.LngLat(pts[i-1].gcjLng, pts[i-1].gcjLat);
+        const b = new AMap.LngLat(pts[i].gcjLng, pts[i].gcjLat);
+        new AMap.Polyline({map:map, path:[a,b], strokeColor:'rgba(0,207,255,.35)', strokeWeight:5, strokeOpacity:.7});
+      }
+      if (pts.length>0){
+        const last = pts[pts.length-1];
+        map.setCenter([last.gcjLng, last.gcjLat]);
+        if (marker) marker.setPosition([last.gcjLng, last.gcjLat]);
+      }
+    }
+  }catch(e){}
+}
+
+async function loadDailyStats(){
+  const dstr = $('stat-date').value;
+  if (!dstr){ $('track-total').innerHTML = '<div class="empty">暂无轨迹数据</div>'; return; }
+  try{
+    if (dstr === 'all'){
+      // 全部记录累计
+      const all = await (await fetch(API+'?action=track&from=0', {cache:'no-store'})).json();
+      $('track-total').innerHTML = `
+      <div class="data-row"><span class="data-label">统计范围</span><span>全部记录</span></div>
+      <div class="data-row"><span class="data-label">累计里程</span><span class="big" style="color:var(--green)">${(all.distance||0).toFixed(2)} km</span></div>
+      <div class="data-row"><span class="data-label">累计轨迹点数</span><span>${all.count||0}</span></div>
+      <div class="data-row"><span class="data-label">累计最高速度</span><span style="color:var(--blue)">${(all.maxSpeed||0).toFixed(1)} km/h</span></div>`;
+      return;
+    }
+    const d = await (await fetch(API+'?action=trips&date='+dstr, {cache:'no-store'})).json();
+    const tr = d.trips || [];
+    let dist = 0, dur = 0, cnt = 0, maxSpd = 0;
+    tr.forEach(t => {
+      dist += t.distanceKm||0; dur += t.durationSec||0; cnt += t.count||0;
+      if ((t.maxSpeed||0) > maxSpd) maxSpd = t.maxSpeed;
+    });
+    $('track-total').innerHTML = `
+      <div class="data-row"><span class="data-label">日期</span><span>${dstr}</span></div>
+      <div class="data-row"><span class="data-label">行驶里程</span><span class="big" style="color:var(--green)">${dist.toFixed(2)} km</span></div>
+      <div class="data-row"><span class="data-label">行程数</span><span>${tr.length} 个</span></div>
+      <div class="data-row"><span class="data-label">行驶时长</span><span>${fmtDur(dur)}</span></div>
+      <div class="data-row"><span class="data-label">最高速度</span><span style="color:var(--blue)">${maxSpd.toFixed(1)} km/h</span></div>
+      <div class="data-row"><span class="data-label">轨迹点数</span><span>${cnt}</span></div>`;
+  }catch(e){}
+}
+
+// ==================== 轨迹回放 ====================
+let replayMap = null, replayMarker = null, replayLine = null;
+let replayPoints = [], replayIdx = 0, replayTimer = null, replaySpeed = 1;
+const REPLAY_FRAME = 400; // 1x 每帧毫秒
+
+function initReplayMap(){
+  if (replayMap) return;
+  try {
+    replayMap = new AMap.Map('replay-map', { zoom: 17, center: [113.223351, 33.774272], viewMode: '2D' });
+    replayMarker = new AMap.Marker({ offset: new AMap.Pixel(-11, -11) });
+    replayLine = new AMap.Polyline({ strokeColor: '#3d9bff', strokeWeight: 5, strokeOpacity: 0.8 });
+    replayMap.add([replayMarker, replayLine]);
+    const tip = $('replay-map-tip');
+    if (tip) tip.style.display = 'none';
+    // 隐藏 Tab 中创建的地图需延迟 resize 强制渲染瓦片
+    setTimeout(() => { if (replayMap) replayMap.resize(); }, 300);
+  } catch (e) {
+    console.error('回放地图初始化失败（高德Key域名白名单问题）', e);
+  }
+}
+
+async function loadTrackDates(){
+  try{
+    const d = await (await fetch(API + '?action=trackdates', {cache:'no-store'})).json();
+    const sel = $('replay-date');
+    sel.innerHTML = '';
+    (d.dates || []).forEach(dt => {
+      const o = document.createElement('option');
+      o.value = dt; o.text = dt;
+      sel.appendChild(o);
+    });
+    sel.value = (d.dates && d.dates.length) ? d.dates[0] : '';
+    if (!d.dates || !d.dates.length) sel.innerHTML = '<option value="">暂无轨迹</option>';
+    // 每日统计日期下拉: 默认今天(有数据), 无则最新一天
+    const statSel = $('stat-date');
+    statSel.innerHTML = '<option value="all">全部</option>';
+    (d.dates || []).forEach(dt => {
+      const o = document.createElement('option');
+      o.value = dt; o.text = dt;
+      statSel.appendChild(o);
+    });
+    const now = new Date();
+    const todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    statSel.value = (d.dates || []).includes(todayStr) ? todayStr : ((d.dates && d.dates.length) ? d.dates[0] : 'all');
+    if (!d.dates || !d.dates.length) statSel.innerHTML = '<option value="all">全部</option>';
+    loadDailyStats();
+    // 加载当前选中日期的行程列表
+    if (sel.value) loadTrips(sel.value);
+    // 日期就绪后：若当前已在轨迹页且地图未创建，自动加载轨迹
+    const tp = $('track-page');
+    if (tp && tp.classList.contains('active') && !replayMap) loadReplay();
+  }catch(e){}
+}
+
+async function loadReplay(){
+  stopReplay();
+  const dt = $('replay-date').value;
+  const tripIdx = parseInt($('replay-trip').value || '-1');
+  console.log('[replay] 加载日期:', dt, '行程:', tripIdx);
+  if (!dt){ $('replay-count').textContent = '无轨迹'; return; }
+  let url = API + '?action=replay&date=' + encodeURIComponent(dt);
+  // 选中具体行程 → 按时间范围回放单次行程
+  if (tripIdx >= 0 && trips[tripIdx]){
+    url += '&from=' + (trips[tripIdx].startTs * 1000) + '&to=' + (trips[tripIdx].endTs * 1000);
+  }
+  const d = await (await fetch(url, {cache:'no-store'})).json();
+  replayPoints = d.points || [];
+  console.log('[replay] 轨迹点数:', replayPoints.length, '首点:', replayPoints[0]);
+  replayIdx = 0;
+  $('replay-count').textContent = replayPoints.length;
+  $('replay-progress').textContent = '0%';
+  $('replay-time').textContent = '--';
+  $('replay-speed').textContent = '--';
+  if (replayPoints.length < 2){ alert('该日期轨迹点不足（少于2个）'); return; }
+  initReplayMap();
+  if (!replayMap){ alert('地图初始化失败，请检查高德Key域名白名单'); return; }
+  const path = replayPoints.map(p => [p.gcjLng, p.gcjLat]); // 高德坐标顺序：[经度, 纬度]
+  replayLine.setPath(path);
+  replayMap.setFitView([replayLine], false, [40, 40, 40, 40]);
+  replayMarker.setPosition(path[0]);
+  setTimeout(() => { if (replayMap) replayMap.resize(); }, 150);
+}
+
+function playReplay(){
+  if (replayTimer){ stopReplay(); return; } // 已播放 → 暂停
+  if (replayPoints.length < 2 || !replayMap) return;
+  $('replay-play').textContent = '⏸ 暂停';
+  const frameMs = REPLAY_FRAME / replaySpeed;
+  replayTimer = setInterval(() => {
+    replayIdx++;
+    if (replayIdx >= replayPoints.length){
+      stopReplay();
+      $('replay-progress').textContent = '100%';
+      return;
+    }
+    const p = replayPoints[replayIdx];
+    const pos = [p.gcjLng, p.gcjLat]; // [经度, 纬度]
+    replayMarker.setPosition(pos);
+    replayLine.setPath(replayPoints.slice(0, replayIdx + 1).map(x => [x.gcjLng, x.gcjLat]));
+    replayMap.panTo(pos);
+    const d = new Date(p.t * 1000);
+    const hh = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+    $('replay-time').textContent = hh;
+    $('replay-speed').textContent = p.speed.toFixed(1) + ' km/h';
+    $('replay-progress').textContent = Math.round(replayIdx / replayPoints.length * 100) + '%';
+  }, frameMs);
+}
+
+function stopReplay(){
+  if (replayTimer){ clearInterval(replayTimer); replayTimer = null; }
+  $('replay-play').textContent = '▶ 播放';
+}
+
+function setReplaySpeed(s){
+  replaySpeed = s;
+  if (replayTimer){ stopReplay(); playReplay(); }
+}
+
+// ==================== 设置页 ====================
+function applyPollInterval(sec){
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(loadLatest, Math.max(1, sec||3)*1000);
+}
+
+async function loadSettings(){
+  try{
+    const s = await (await fetch(API+'?action=settings', {cache:'no-store'})).json();
+    $('set-webPollSec').value = s.webPollSec;
+    $('set-realtimeBmsSec').value = s.realtimeBmsSec;
+    $('set-realtimeGpsSec').value = s.realtimeGpsSec;
+    $('set-dataRetentionDays').value = s.dataRetentionDays || 60;
+    $('set-amapKey').value = s.amapKey || '';
+    $('set-amapSecurity').value = s.amapSecurity || '';
+    $('set-authUsername').value = s.authUsername || '';
+    applyPollInterval(s.webPollSec);
+  }catch(e){}
+}
+
+async function saveAmap(){
+  const body = {
+    amapKey: $('set-amapKey').value.trim(),
+    amapSecurity: $('set-amapSecurity').value.trim(),
+  };
+  try{
+    const r = await fetch(API+'?action=settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if (d.ok){ alert('高德地图设置已保存，请刷新页面生效'); loadSettings(); }
+    else { alert('保存失败: ' + (d.error||'')); }
+  }catch(e){ alert('保存失败'); }
+}
+
+// 远程重启设备（下行链路通时生效）
+async function remoteReboot(){
+  if (!confirm('确定要远程重启设备吗？\n\n· 通过 EMQX 下行指令重启 ESP32，约 10 秒恢复\n· 若设备当前已断数据（下行不通），指令将无法送达')) return;
+  try{
+    const r = await (await fetch(API+'?action=reboot', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})).json();
+    if (r.ok) alert('✅ 重启指令已下发，设备约 10 秒后恢复');
+    else alert('❌ 下发失败: ' + (r.error || '未知错误'));
+  }catch(e){ alert('❌ 网络错误: ' + e); }
+}
+
+async function saveAuth(){  const body = {
+    authUsername: $('set-authUsername').value.trim(),
+    authCurrent: $('set-authCurrent').value,
+    authPassword: $('set-authPassword').value,
+  };
+  if (!body.authUsername){ alert('登录账号不能为空'); return; }
+  if (body.authPassword && body.authPassword.length < 6){ alert('新密码至少 6 位'); return; }
+  try{
+    const r = await fetch(API+'?action=settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if (d.ok){
+      const msg = d.changed && d.changed.authPassword ? '账号已保存，下次登录生效' : '账号已保存';
+      alert(msg);
+      $('set-authCurrent').value = '';
+      $('set-authPassword').value = '';
+      loadSettings();
+    }
+    else { alert('保存失败: ' + (d.error||'')); }
+  }catch(e){ alert('保存失败'); }
+}
+
+async function saveSettings(){
+  const clamp = (v, min, max, def) => Math.min(max, Math.max(min, parseInt(v)||def));
+  const body = {
+    webPollSec:     clamp($('set-webPollSec').value, 1, 30, 3),
+    realtimeBmsSec: clamp($('set-realtimeBmsSec').value, 1, 300, 2),
+    realtimeGpsSec: clamp($('set-realtimeGpsSec').value, 1, 300, 2),
+    dataRetentionDays: clamp($('set-dataRetentionDays').value, 0, 3650, 60),
+  };
+  try{
+    const r = await fetch(API+'?action=settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if (d.ok){ alert('设置已保存'); loadSettings(); }
+    else { alert('保存失败: ' + (d.error||'')); }
+  }catch(e){ alert('保存失败'); }
+}
+
+// ==================== 启动 ====================
+setInterval(heartbeat, 5000);
+setInterval(loadTrack, 30000); // 轨迹统计每 30 秒刷新
+setInterval(loadAlarms, 30000);    // ★融合: 告警 30s 刷新
+setInterval(loadChargeCycles, 60000); // ★融合: 充电循环 60s 刷新
+setInterval(loadCapacity, 30000);  // ★融合: 容量校准 30s 刷新
+initReplayMap(); // 提前创建回放地图（隐藏容器在 visibility 方案下也有尺寸，避免切 Tab 时渲染问题）
+initWeather();   // 天气插件（高德 AMap.Weather + 逆地理编码）
+loadTrackDates(); loadSettings(); loadLatest(); heartbeat(); loadTrack(); loadAlarms(); loadChargeCycles(); loadCapacity();
+</script>
+</body>
+</html>

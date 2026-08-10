@@ -1,0 +1,45 @@
+{
+  "port": 1880,
+  "host": "0.0.0.0",
+  "db": { "path": "./data/bms.db" },
+  "mqtt": {
+    "host": "你的EMQX地址.emqxsl.cn",
+    "port": 8883,
+    "tls": true,
+    "username": "你的EMQX客户端认证账号",
+    "password": "你的EMQX客户端认证密码",
+    "topic": "T",
+    "controlTopic": "R",
+    "ingestToken": "改成你的随机webhook令牌",
+    "keepalive": 60,
+    "clean": true,
+    "reconnectPeriod": 5000
+  },
+  "auth": {
+    "enabled": true,
+    "username": "admin",
+    "password": "改成你的登录密码",
+    "sessionDays": 7,
+    "maxFails": 5,
+    "lockSeconds": 300
+  },
+  "settings": {
+    "onlineTimeout": 25,
+    "realtimeBmsSec": 6,
+    "realtimeGpsSec": 2,
+    "trackGpsSec": 30,
+    "dataRetentionDays": 60,
+    "amapKey": "",
+    "rangeFactorDefault": 2.0,
+    "alarmsEnabled": true,
+    "chargeCyclesEnabled": true,
+    "capLearningEnabled": true,
+    "alarmThresholds": {
+      "maxCellV": 3.65,
+      "minCellV": 2.8,
+      "maxTemp": 60,
+      "minSOC": 20,
+      "deltaCellV": 0.05
+    }
+  }
+}

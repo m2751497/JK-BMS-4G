@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>JK-BMS 4G 看板</title>
+<style>
+:root{--bg:#f0f2f5;--card:#fff;--text:#2f3542;--sub:#7a8699;--green:#26de81;--blue:#45aaf2;--red:#fc5c65;--yellow:#fed330;--shadow:0 2px 10px rgba(47,53,66,.08)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;padding:16px;max-width:1100px;margin:0 auto}
+h1{font-size:20px;margin-bottom:4px}
+.sub{color:var(--sub);font-size:12px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:16px}
+.card .k{font-size:12px;color:var(--sub);margin-bottom:6px}
+.card .v{font-size:26px;font-weight:700}
+.card .v small{font-size:13px;font-weight:400;color:var(--sub);margin-left:2px}
+.green{color:var(--green)}.blue{color:var(--blue)}.red{color:var(--red)}.yellow{color:var(--yellow)}
+.row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.row .card{flex:1;min-width:300px}
+h2{font-size:14px;margin-bottom:10px;color:var(--text)}
+.cells{display:grid;grid-template-columns:repeat(auto-fill,minmax(30px,1fr));gap:4px}
+.cell{background:#f7f9fc;border:1px solid #e4e9f0;border-radius:6px;padding:4px 2px;text-align:center;font-size:10px;color:var(--sub)}
+.cell b{display:block;font-size:11px;color:var(--text)}
+.alarm{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
+.alarm:last-child{border-bottom:none}
+.badge{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;flex:0 0 auto}
+.badge.critical{background:#fde8ea;color:var(--red)}
+.badge.warning{background:#fff4d6;color:#b7791f}
+table{width:100%;border-collapse:collapse;font-size:12px}
+td,th{padding:6px 8px;border-bottom:1px solid #f0f0f0;text-align:left}
+th{color:var(--sub);font-weight:600}
+.err{color:var(--red);font-size:12px}
+#tabs{display:flex;gap:8px;margin-bottom:16px}
+.tab{padding:8px 16px;border-radius:20px;background:var(--card);cursor:pointer;font-size:13px;box-shadow:var(--shadow)}
+.tab.on{background:var(--blue);color:#fff}
+.page{display:none}.page.on{display:block}
+</style>
+</head>
+<body>
+<h1>⚡ JK-BMS 4G 看板</h1>
+<div class="sub" id="meta">加载中...</div>
+<div id="tabs">
+  <div class="tab on" data-p="overview">总览</div>
+  <div class="tab" data-p="history">轨迹</div>
+  <div class="tab" data-p="alarms">告警</div>
+</div>
+
+<div id="p-overview" class="page on">
+  <div class="grid">
+    <div class="card"><div class="k">总电压</div><div class="v blue" id="mv">--<small>V</small></div></div>
+    <div class="card"><div class="k">电流</div><div class="v" id="mi">--<small>A</small></div></div>
+    <div class="card"><div class="k">功率</div><div class="v" id="mp">--<small>W</small></div></div>
+    <div class="card"><div class="k">SOC</div><div class="v green" id="msoc">--<small>%</small></div></div>
+    <div class="card"><div class="k">剩余/额定</div><div class="v" id="mcap">--<small>Ah</small></div></div>
+    <div class="card"><div class="k">续航</div><div class="v" id="mrange">--<small>km</small></div></div>
+    <div class="card"><div class="k">温度</div><div class="v" id="mtemp">--<small>℃</small></div></div>
+    <div class="card"><div class="k">压差</div><div class="v" id="mdelta">--<small>mV</small></div></div>
+  </div>
+  <div class="row">
+    <div class="card" style="flex:2"><h2>单体电压 (V)</h2><div class="cells" id="mcells"></div></div>
+    <div class="card" style="flex:1"><h2>状态</h2>
+      <div id="mstatus"></div>
+    </div>
+  </div>
+</div>
+
+<div id="p-history" class="page">
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
+    <div class="card"><div class="k">今日里程</div><div class="v blue" id="hd">--<small>km</small></div></div>
+    <div class="card"><div class="k">今日最高速</div><div class="v" id="hmax">--<small>km/h</small></div></div>
+    <div class="card"><div class="k">轨迹点数</div><div class="v" id="hcount">--</div></div>
+  </div>
+  <div class="card"><h2>有轨迹的日期</h2><table><tbody id="hdates"></tbody></table></div>
+</div>
+
+<div id="p-alarms" class="page">
+  <div class="card"><h2>最近告警 (24h)</h2><div id="alarms"></div></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const API='';
+let latest=null;
+async function j(url,opt){const r=await fetch(url,opt);if(r.status===401){location.href='/login.html';throw 0}return r.json();}
+function fmt(v,unit,d=1){return (v===null||v===undefined||isNaN(v))?'--':(Number(v).toFixed(d)+' '+unit);}
+function esc(s){return String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
+
+async function loadOverview(){
+  latest=await j(API+'/api/latest');
+  const b=latest.bms||{};
+  $('meta').textContent=(latest.lastUpdate?('更新于 '+latest.lastUpdate+' · '):'')+'在线: '+(latest.online>0?'是':'否')+' · 模式: '+latest.mode;
+  $('mv').textContent=fmt(b.totalVoltage,'V');
+  $('mi').textContent=fmt(b.current,'A');
+  $('mp').textContent=fmt(b.power,'W');
+  $('msoc').textContent=fmt(b.soc,'%',0);
+  $('mcap').textContent=(b.capRemain!=null?b.capRemain:'--')+' / '+(b.capNominal!=null?b.capNominal:'--');
+  $('mrange').textContent=fmt(latest.range?.rangeKm,'km');
+  const tmax=Math.max(b.temp1||0,b.temp2||0,b.mosTemp||0);
+  $('mtemp').textContent=fmt(tmax,'℃');
+  $('mdelta').textContent=fmt(b.deltaCellV!=null?b.deltaCellV*1000:null,'mV',0);
+  // 单体电压
+  const cells=(b.cellVoltages||[]).slice(0,b.cellCount||0);
+  $('mcells').innerHTML=cells.map(v=>{
+    const cls=v>=3.4&&v<=4.2?'green':(v>0?'red':'');
+    return '<div class="cell"><b class="'+cls+'">'+(v||'-')+'</b></div>';
+  }).join('')||'<div class="err">暂无电芯数据</div>';
+  // 状态
+  const st=latest.status||{};
+  $('mstatus').innerHTML=
+    '<div class="alarm"><span class="badge '+(b.chargeMOS?'warning':'')+'">充电MOS</span>'+(b.chargeMOS?'开':'关')+'</div>'+
+    '<div class="alarm"><span class="badge '+(b.dischargeMOS?'warning':'')+'">放电MOS</span>'+(b.dischargeMOS?'开':'关')+'</div>'+
+    '<div class="alarm"><span class="badge '+(b.balancerOn?'green':'')+'">均衡</span>'+(b.balancerOn?'进行中':'关')+'</div>'+
+    '<div class="alarm"><span class="badge">4G信号</span>'+(st.csq!=null?st.csq+' (CSQ)':'--')+'</div>'+
+    '<div class="alarm"><span class="badge">BMS蓝牙</span>'+(st.bleState?'连接 ('+esc(st.bleMac)+')':'断开')+'</div>'+
+    '<div class="alarm"><span class="badge">里程基数</span>'+fmt(latest.range?.rangeFactor,'km/Ah')+'</div>';
+}
+async function loadHistory(){
+  const d=await j(API+'/api/track');
+  $('hd').textContent=fmt(d.distance,'km');
+  $('hmax').textContent=fmt(d.maxSpeed,'km/h');
+  $('hcount').textContent=d.count;
+  const dates=await j(API+'/api/track/dates');
+  $('hdates').innerHTML=(dates.dates||[]).map(x=>'<tr><td>'+esc(x)+'</td><td><a href="#" onclick="return pickDate(\''+x+'\')">查看</a></td></tr>').join('')||'<tr><td>暂无轨迹</td></tr>';
+}
+async function pickDate(date){
+  const d=await j(API+'/api/track?from='+new Date(date+'T00:00:00').getTime());
+  alert(date+' 里程: '+d.distance+' km, 点数: '+d.count);
+  return false;
+}
+async function loadAlarms(){
+  const d=await j(API+'/api/alarms?hours=24');
+  const list=(d.alarms||[]).map(a=>
+    '<div class="alarm"><span class="badge '+a.level+'">'+(a.level==='critical'?'严重':'警告')+'</span>'+
+    '<span>'+esc(a.message)+'</span><span style="margin-left:auto;color:var(--sub)">'+new Date(a.ts).toLocaleString('zh-CN',{hour12:false})+'</span></div>'
+  ).join('');
+  $('alarms').innerHTML=list||'<div class="sub">暂无告警</div>';
+}
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab,.page').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');$('p-'+t.dataset.p).classList.add('on');
+  if(t.dataset.p==='history')loadHistory();
+  if(t.dataset.p==='alarms')loadAlarms();
+});
+(async()=>{
+  try{await j(API+'/api/authcheck');}catch(e){return;}
+  loadOverview();loadAlarms();
+  setInterval(loadOverview,5000);
+})();
+</script>
+</body>
+</html>

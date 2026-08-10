@@ -25,3 +25,8 @@ Thumbs.db
 .vscode/
 02-ESP32固件/esp32s3-gateway/build/
 02-ESP32固件/psram-check/build/
+
+# ===== Node.js 常驻进程版 (02-Node服务端) =====
+02-Node服务端/node_modules/
+02-Node服务端/data/
+02-Node服务端/config.json

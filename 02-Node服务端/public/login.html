@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>登录 - JK BMS 4G 远程监控</title>
+<style>
+:root{--bg:#0b1016;--card:#131b24;--line:#223140;--text:#dbe7f3;--sub:#6f8399;--blue:#00cfff}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;font-family:sans-serif}
+.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:32px;width:320px;max-width:92vw}
+h1{font-size:18px;margin-bottom:6px}
+p{color:var(--sub);font-size:12px;margin-bottom:20px}
+input{width:100%;background:#0d1420;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px 12px;margin-bottom:12px;font-size:14px;outline:none}
+input:focus{border-color:var(--blue)}
+button{width:100%;background:linear-gradient(135deg,#00cfff,#0077ff);border:none;border-radius:8px;color:#fff;padding:11px;font-size:14px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5}
+#err{color:#ff4d67;font-size:12px;margin-top:10px;min-height:16px}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>JK BMS 4G 远程监控</h1>
+  <p>Node.js 常驻进程版 · 请登录</p>
+  <form id="f" autocomplete="off">
+    <input id="u" placeholder="账号" autocomplete="username">
+    <input id="p" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="b" type="submit">登 录</button>
+  </form>
+  <div id="err"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+$('f').addEventListener('submit',async e=>{
+  e.preventDefault();$('b').disabled=true;$('err').textContent='';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:$('u').value,password:$('p').value})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok&&d.ok){location.href='/index.html';return}
+    $('err').textContent=d.error||'登录失败';
+  }catch(e){$('err').textContent='网络错误';}
+  $('b').disabled=false;
+});
+// 已登录直接进
+(async()=>{try{const d=await(await fetch('/api/authcheck')).json();if(d.ok)location.href='/index.html';}catch(e){}})();
+</script>
+</body>
+</html>
