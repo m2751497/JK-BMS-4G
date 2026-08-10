@@ -1,5 +1,5 @@
 /*
- * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.19）
+ * ESP32-S3 JK-BMS 4G 远程监控网关固件（合并版 v2.20）
  *
  * 功能:
  *   1. BLE 客户端: 连接极空 BMS, 特征选择"属性驱动 + handle 优先"(FIX-19/v9.3):
@@ -17,10 +17,10 @@
  *   5. 4G/GPS 串口: UART1 (TX=13, RX=12) 接银尔达 M100PG-DTU, 支持指令 chaxun / getcsq /
  *      getgps / getblestatus, GPS 查询指令 config,get,gpsext, 输出 gps:fix,lonDir,lon,latDir,lat,speed
  *   6. 双模式定时上报 (核心新增): 解析 UART1 下发的 mode,realtime/track,<bms_ms>,<gps_ms> 指令,
- *      track 默认 GPS 30s (v2.6); 静止省流 (v2.7, 全部模式生效): 速度≥3km/h 且位移≥30m;
+ *      track 默认 GPS 30s (v2.6); 静止省流 (v2.7, 全部模式生效): 速度≥3km/h 且位移≥30m
+ *      才算运动(双条件防 GPS 漂移误判), 静止≥60s 停发 GPS, 移动自动 2s 实时上报;
  *      BMS 按电流 (v2.19): 网页开 realtime 2s 高频; 网页关 track 时充/放电(|I|>=0.3A) 30s 上报
  *      (续航学习数据), 停放停报零流量
- *      才算运动(双条件防 GPS 漂移误判), 静止≥60s 停发 GPS, 移动自动 2s 实时上报;
  *      BMS 双重判断(v2.12): 网页开→一律 2s 实时(充/放电/停放); 网页关→一律 30s;
  *      GPS 只看移动/静止(v2.11, 网页开关无关): 移动 2s 实时 / 静止≥60s 停发, 30s 本地探测;
  *      BMS 充放电驱动(v2.9): |I|≥0.3A 判充/放电;
@@ -1009,7 +1009,7 @@ const char INDEX_HTML[] PROGMEM =
 "<div class='app'>\n"
 "<div class='header'>\n"
 "<div class='header-top'>\n"
-"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.19</sub></span>\n"
+"<span class='app-title' id='appTitle'>JK BMS 蓝牙中继后台<sub class='app-version'>v2.20</sub></span>\n"
 "</div>\n"
 "</div>\n"
 "<div class='content' id='content'>\n"
@@ -1309,6 +1309,14 @@ int g_serverConnCount = 0;
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     uint16_t handle = connInfo.getConnHandle();
+    // ★v9.60 (v9.57): BMS 未连接时拒绝客户端接入 —— 替代 v9.41 "停广播"防抢连。
+    //   停广播→恢复时 pAdv->start()→pServer->start()→resetGATT→ble_svc_gap_init 崩溃;
+    //   改为连接回调直接拒绝, 安全无竞争。副作用: BMS 未连接时客户端搜得到但连不上。
+    if (!bmsConnected) {
+      Serial.printf("[BLE-Server] BMS 未连接, 拒绝客户端 handle=%d (防抢连)\n", handle);
+      pServer->disconnect(handle);
+      return;
+    }
     int slot = registerConn(handle);
     g_serverConnCount++;
     if (slot < 0) {
@@ -1526,11 +1534,14 @@ void initBleServer() {
 
   pAdv->setScanResponseData(scanRsp);
 
-  // v9.41: 初始化不启动广播 —— BMS 未连接时对客户端隐身 (防抢连挤占 BMS 连接/MTU 协商);
-  //   广播由 loop 广播健康检查在 bmsConnected=true 后自动拉起。
-  // pAdv->start();
+  // ★v9.60 (v9.57 安全模式): setup 即启动广播, 保持 active 永不重启 GATT。
+  //   根因: v9.41 "隐身"(删 setup 广播 + BMS 未连接停广播) → BMS 连接后健康检查首次
+  //   pAdv->start() → 内部 pServer->start() → resetGATT() → ble_svc_gap_init 重复注册
+  //   (rc=15 EBUSY) → 断言崩溃 (v9.56 移除连接处启动仍崩, v9.57 定为 setup 常开)。
+  //   防抢连改由 onConnect 拒绝实现 (BMS 未连接时拒客户端), 不再停广播。
+  pAdv->start();
 
-  Serial.printf("[BLE-Server] 广播已配置, 名称: %s (BMS 连接后自动启动)\n", g_config.relayName);
+  Serial.printf("[BLE-Server] 广播已启动, 名称: %s\n", g_config.relayName);
   Serial.println("[BLE-Server] 服务: FFE0(FFE1/FFE2/FFE3) + FF10(FF11/FF12)");
   Serial.println("[BLE-Server] 等待极空 App 连接...");
 }
@@ -1748,7 +1759,24 @@ bool connectToBms() {
 
   Serial.printf("[BMS] 已连接, MTU=%u\n", pClient->getMTU());
 
+  // ★v9.60: MTU<100 先"连接上补协商"——不立即断开重试 (C3 断开重连慢:
+  //   重扫描5s+连接+服务发现, 几次连不上+MTU23 会拉长到 30s+)。
+  //   connect() 的 MTU 交换在 C3 单核被 WiFi/Server 活动挤超时 (同步等待超时仍返回),
+  //   但连接本身是好的 → 主动 exchangeMTU() 异步再协商, 轮询 getMTU() 等结果 (≤2s)。
+  if (pClient->getMTU() < 100) {
+    Serial.printf("[BMS] MTU=%u, 连接上主动补协商 (exchangeMTU)...\n", pClient->getMTU());
+    bool exOk = pClient->exchangeMTU();
+    if (exOk) {
+      unsigned long exStart = millis();
+      while (pClient->getMTU() < 100 && millis() - exStart < 2000) {
+        delay(50);
+      }
+    }
+    Serial.printf("[BMS] 补协商后 MTU=%u\n", pClient->getMTU());
+  }
+
   // v9.40/v9.43: MTU 检查 —— MTU<100 协商异常 → 有限重试 → 仍低则降级接受 MTU=23 继续
+  //   (v9.60: 补协商失败才走重试)
   if (pClient->getMTU() < 100) {
     if (g_mtuRetryCount < MTU_MAX_RETRY) {
       g_mtuRetryCount++;
@@ -2628,38 +2656,23 @@ void loop() {
     g_btnPressed = false;
   }
 
-  // 0.5 BLE 广播健康检查 (v9.41/v9.42: BMS 未连接时对客户端隐身, 防抢连挤占 MTU 协商)
+  // 0.5 BLE 广播健康检查 (v9.60: v9.57-59 安全模式)
+  //   setup 已 start 广播并保持 active, 运行时不再因"隐身"停/启广播
+  //   (停→启会触发 pServer->start()->resetGATT()->ble_svc_gap_init 崩溃);
+  //   防抢连由 onConnect 拒绝实现; 这里只按客户端数停/恢复广播。
   static unsigned long lastAdvCheck = 0;
   if (pBleServer && millis() - lastAdvCheck > 5000) {
     lastAdvCheck = millis();
     NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
 
-    // v9.41: BMS 未连接时停止广播 —— 防止客户端 (显示屏/极空 App) 先抢连中继,
-    //   挤占 BMS 连接资源导致 MTU 协商失败 (MTU=23) / reason 520。
-    //   BMS 连上后恢复广播, 客户端即可正常连接取数。
-    if (!bmsConnected) {
-      if (pAdv->isAdvertising()) {
-        Serial.println("[BLE-Server] BMS 未连接, 停止广播 (防客户端抢连)");
-        pAdv->stop();
-      }
-      // v9.42: 同时主动断开已连接的客户端 (仅停广播不会断开已建立连接,
-      //   旧客户端仍占用 Server 侧连接槽 → BMS 重连时 MTU 协商照样被挤)。
-      for (int i = 0; i < MAX_BLE_CLIENTS; i++) {
-        if (g_connStates[i].active) {
-          uint16_t h = g_connStates[i].connHandle;
-          Serial.printf("[BLE-Server] BMS 未连接, 断开客户端 handle=%d (释放 Server 侧资源)\n", h);
-          if (pBleServer) pBleServer->disconnect(h);
-        }
-      }
-    } else {
-      // BMS 已连接: 未达上限保持广播
-      if (g_bleClientCount < MAX_BLE_CLIENTS && !pAdv->isAdvertising()) {
-        Serial.println("[BLE-Server] BMS 已连接, 广播恢复");
-        pAdv->start();
-      } else if (g_bleClientCount >= MAX_BLE_CLIENTS && pAdv->isAdvertising()) {
-        Serial.println("[BLE-Server] 已达最大连接数, 停止广播");
-        pAdv->stop();
-      }
+    // v9.59: 连满停广播, 客户端断开后自动恢复 (setup 已消费 m_svcChanged,
+    //   m_gattsStarted=true, 再次 start 走提前返回不触发 resetGATT, 安全)
+    if (g_bleClientCount < MAX_BLE_CLIENTS && !pAdv->isAdvertising()) {
+      Serial.println("[BLE-Server] 广播恢复 (客户端未满)");
+      pAdv->start();
+    } else if (g_bleClientCount >= MAX_BLE_CLIENTS && pAdv->isAdvertising()) {
+      Serial.println("[BLE-Server] 已达最大连接数, 停止广播");
+      pAdv->stop();
     }
   }
 
